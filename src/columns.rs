@@ -17,6 +17,9 @@ use crate::item::Item;
 /// Width of each column, in logical pixels
 pub const COLUMN_WIDTH: f32 = 260.0;
 
+/// Width of the file preview column: a full thumbnail and its padding
+pub const PREVIEW_COLUMN_WIDTH: f32 = 340.0;
+
 /// One folder's listing shown as a column other than the active one
 pub struct ColumnListing {
     pub path: PathBuf,
@@ -53,6 +56,8 @@ pub struct ColumnsState {
     pub ancestors: Vec<ColumnListing>,
     /// Contents of the single selected folder in the active column
     pub preview: Option<ColumnListing>,
+    /// The single selected file in the active column, shown as a preview after it
+    pub preview_file: Option<PathBuf>,
     /// Listings dropped by the last rebuild, kept so a following preview or active column can
     /// reuse them instead of waiting for a rescan
     cache: Vec<ColumnListing>,

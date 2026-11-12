@@ -74,6 +74,8 @@ sudo apt install --reinstall cosmic-files
 - **Other columns live in `Tab::columns`** (`src/columns.rs`, `ColumnsState`):
   - `ancestors`: folders from `root` down to the parent of the active folder;
   - `preview`: contents of the single selected folder (none for files or multi-select).
+  - A single selected file is previewed in a last, wider column instead
+    (`Item::preview_summary_view`: the details pane without its settings).
 - **Root.** A folder chosen in the sidebar (or a drive mounted from it) always becomes the root,
   the leftmost column, as in Finder. Otherwise the root is kept while the active folder stays
   inside it; a jump elsewhere (breadcrumb, sibling) makes the new folder the root, and moving left
@@ -121,7 +123,6 @@ sudo apt install --reinstall cosmic-files
 Phase 1 (MVP) is in place. Known gaps, roughly in priority order:
 
 - Non-active columns build every row; they should only build visible rows, like the list view.
-- No file preview column for a selected file (the details pane still works).
 - Column width is fixed (`COLUMN_WIDTH`); long names are ellipsized.
 - No file chooser dialog support; no thumbnails in non-active columns.
 - Right-to-left layouts are not mirrored.

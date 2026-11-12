@@ -43,7 +43,9 @@ use walkdir::WalkDir;
 
 use crate::app::{Action, PreviewItem, PreviewKind};
 use crate::clipboard::{ClipboardCopy, ClipboardKind, ClipboardPaste};
-use crate::columns::{COLUMN_WIDTH, ColumnListing, ColumnTarget, ColumnsState};
+use crate::columns::{
+    COLUMN_WIDTH, ColumnListing, ColumnTarget, ColumnsState, PREVIEW_COLUMN_WIDTH,
+};
 use crate::config::{
     ContextActionPreset, ICON_SCALE_MAX, ICON_SIZE_GRID, IconSizes, TabConfig, ThumbCfg,
 };
@@ -1509,16 +1511,28 @@ impl Tab {
     }
 
     /// The selected item's path when exactly one folder is selected
-    fn single_selected_dir(&self) -> Option<PathBuf> {
+    /// The selected item when exactly one is selected
+    fn single_selected_item(&self) -> Option<&Item> {
         let mut selected = self.items_opt.as_ref()?.iter().filter(|i| i.state.selected);
         let item = selected.next()?;
-        if selected.next().is_some() || !item.metadata.is_dir() {
+        selected.next().is_none().then_some(item)
+    }
+
+    fn single_selected_dir(&self) -> Option<PathBuf> {
+        let item = self.single_selected_item()?;
+        if !item.metadata.is_dir() {
             return None;
         }
         match item.location_opt.as_ref()? {
             Location::Path(path) => Some(path.clone()),
             _ => None,
         }
+    }
+
+    /// The selected file when exactly one item is selected and it is a file
+    fn single_selected_file(&self) -> Option<&Item> {
+        self.single_selected_item()
+            .filter(|item| !item.metadata.is_dir())
     }
 
     /// Bring every column up to date with the current folder and selection, returning the scans
@@ -1530,6 +1544,13 @@ impl Tab {
         }
         let preview = self.single_selected_dir();
         self.columns.set_preview(preview.as_deref());
+        let preview_file = self
+            .single_selected_file()
+            .and_then(|item| item.path_opt().cloned());
+        if self.columns.preview_file != preview_file {
+            self.columns.preview_file = preview_file;
+            self.columns.scroll_to_end = true;
+        }
         self.columns.clear_cache();
 
         let mut commands: Vec<_> = self
@@ -4914,6 +4935,20 @@ impl Tab {
                 None,
                 false,
             ));
+        } else if let Some(item) = self.single_selected_file() {
+            // As in Finder, a single selected file is previewed in a last column
+            let padding = column_padding();
+            let preview = column_scrollable(
+                widget::container(item.preview_summary_view(self.config.military_time))
+                    .padding(padding),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill);
+            row = row.push(column_divider()).push(
+                widget::container(preview)
+                    .width(Length::Fixed(PREVIEW_COLUMN_WIDTH))
+                    .height(Length::Fill),
+            );
         }
 
         let view = widget::scrollable::horizontal(row.height(Length::Fill))
@@ -7107,6 +7142,36 @@ mod tests {
             vec![Location::Path(fs.path().join("loose.txt"))]
         );
         assert!(tab.column_context_folder().is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn columns_single_selected_file_is_previewed() -> io::Result<()> {
+        let (fs, mut tab) = columns_fixture()?;
+        let loose = fs.path().join("loose.txt");
+        let dirs = subdirs(fs.path())?;
+
+        let commands = columns_select(&mut tab, vec![loose.clone()]);
+        assert_eq!(tab.columns.preview_file.as_ref(), Some(&loose));
+        assert!(tab.columns.preview.is_none(), "no folder column for a file");
+        assert!(
+            commands.iter().any(|c| matches!(c, Command::Iced(_))),
+            "the view scrolls to show the preview"
+        );
+
+        columns_select(&mut tab, vec![loose, dirs[0].clone()]);
+        assert!(
+            tab.columns.preview_file.is_none(),
+            "nothing for several items"
+        );
+
+        columns_select(&mut tab, vec![dirs[0].clone()]);
+        assert!(
+            tab.columns.preview_file.is_none(),
+            "a folder shows its contents"
+        );
+        assert!(tab.columns.preview.is_some());
 
         Ok(())
     }

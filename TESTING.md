@@ -44,6 +44,7 @@ This document provides a regression testing checklist for COSMIC Files. The chec
 
 - [ ] Ctrl+3 and View -> Columns view switch to columns; Ctrl+1/Ctrl+2 switch back.
 - [ ] Selecting a folder shows its contents in a new column to the right; selecting a file or several items shows none.
+- [ ] Selecting a single file shows its preview and details (name, type, size, dates) in a last column; several items show none.
 - [ ] Right arrow enters the selected folder and selects its first item; Left arrow returns and selects the folder left.
 - [ ] Left arrow in the leftmost column adds the parent folder as a new leftmost column.
 - [ ] Choosing a folder in the sidebar shows it as the leftmost column, even if it is inside the current folders.
