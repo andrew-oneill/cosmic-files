@@ -72,6 +72,11 @@ sudo apt install --reinstall cosmic-files
   (outlined), so the selection and columns stay put. The menu's `on_close`, a click, or a change of
   folder clears it. "Show details" selects the item first, since the details pane follows the
   selection.
+- **Press, then click or drag.** In the columns view, a press on an unselected item (no
+  modifiers) or on any item in another column waits for the release (`PendingPress`). A release
+  without a drag is the click; a drag (`DndSource::on_start`) instead carries just the pressed
+  item, so dragging never selects anything or moves the columns. The list and grid views keep
+  selecting on press.
 - **Sync.** `Tab::sync_columns` runs at the end of every `Tab::update`. It rebuilds the
   ancestors for the current folder, sets the preview from the selection, and returns
   `Command::ScanColumn` for folders that need scanning and a scroll to the rightmost column.
@@ -92,6 +97,7 @@ sudo apt install --reinstall cosmic-files
 | Left | To the parent column, selecting the folder left |
 | Click in another column | Make that column active with the item selected |
 | Double-click a file in another column | Open it |
+| Drag an unselected item | Drag just that item; the selection and columns stay as they are |
 | Right-click in another column | Outline the item and open its context menu, leaving the selection as it is |
 
 ## Status

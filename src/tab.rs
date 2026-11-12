@@ -406,6 +406,12 @@ pub enum Message {
     /// Right-click on an item in a non-active column: the context menu acts on it alone,
     /// without changing the selection
     ColumnRightClick(ColumnTarget, usize),
+    /// Mouse released on an item in a non-active column
+    ColumnClickRelease(ColumnTarget, usize),
+    /// A drag of items out of this tab began
+    DragStarted,
+    /// A drag of items out of this tab was dropped or cancelled
+    DragFinished,
     /// Make the column holding this path active, with the path selected
     ColumnActivate(PathBuf),
     ContextMenuClosed,
@@ -501,6 +507,16 @@ impl MenuAction for LocationMenuAction {
     fn message(&self) -> Self::Message {
         Message::LocationMenuAction(*self)
     }
+}
+
+/// An item pressed in the columns view whose click waits for the mouse release, so dragging it
+/// changes neither the selection nor the columns
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PendingPress {
+    /// Index into the active column's items
+    Active(usize),
+    /// Index into a non-active column's items
+    Column(ColumnTarget, usize),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -619,6 +635,9 @@ pub struct Tab {
     columns_scroll_id: widget::Id,
     /// Item in a non-active column whose context menu is open
     column_context: Option<PathBuf>,
+    pending_press: Option<PendingPress>,
+    /// Set while a pending press is applied, so it is not deferred again
+    applying_press: bool,
 }
 
 async fn calculate_dir_size(path: &Path, controller: Controller) -> Result<u64, OperationError> {
@@ -729,6 +748,8 @@ impl Tab {
             columns: ColumnsState::default(),
             columns_scroll_id: widget::Id::unique(),
             column_context: None,
+            pending_press: None,
+            applying_press: false,
         }
     }
 
@@ -806,6 +827,45 @@ impl Tab {
                     .filter(|item| item.state.selected),
             ),
         }
+    }
+
+    /// Whether a press on active-column item `i` waits for the release: in the columns view, on
+    /// an unselected item, without modifiers
+    fn defers_press(&self, i: usize, mod_ctrl: bool, mod_shift: bool) -> bool {
+        !self.applying_press
+            && !mod_ctrl
+            && !mod_shift
+            && self.columns.is_active()
+            && self
+                .items_opt
+                .as_ref()
+                .and_then(|items| items.get(i))
+                .is_some_and(|item| !item.state.selected)
+    }
+
+    /// Paths a drag out of this tab carries: a pending press, or the selection
+    fn drag_paths(&self) -> Box<[PathBuf]> {
+        let pressed = match self.pending_press {
+            Some(PendingPress::Active(i)) => self.items_opt.as_ref().and_then(|items| items.get(i)),
+            Some(PendingPress::Column(target, i)) => self
+                .columns
+                .target(target)
+                .and_then(|listing| listing.items.as_ref()?.get(i)),
+            None => {
+                return self
+                    .items_opt
+                    .iter()
+                    .flatten()
+                    .filter(|item| item.state.selected)
+                    .filter_map(|item| item.path_opt().cloned())
+                    .collect();
+            }
+        };
+        pressed
+            .and_then(Item::path_opt)
+            .cloned()
+            .into_iter()
+            .collect()
     }
 
     /// The item right-clicked in another column, while its context menu is open
@@ -1463,6 +1523,14 @@ impl Tab {
                 commands.push(Command::AutoScroll(auto_scroll));
             }
             Message::ClickRelease(click_i_opt) => {
+                // A press without a drag: now it is a click
+                if let Some(PendingPress::Active(i)) = self.pending_press.take()
+                    && click_i_opt == Some(i)
+                {
+                    self.applying_press = true;
+                    commands.extend(self.update(Message::Click(Some(i)), modifiers));
+                    self.applying_press = false;
+                }
                 // Single click to open.
                 if !mod_ctrl && self.config.single_click {
                     let mut paths_to_open = Vec::new();
@@ -1507,7 +1575,22 @@ impl Tab {
                 self.clicked = None;
             }
             Message::ColumnClick(target, i) => {
+                // Wait for the release, so a drag leaves the columns as they are
                 self.column_context = None;
+                self.pending_press = Some(PendingPress::Column(target, i));
+                self.selected_clicked = true;
+            }
+            Message::DragStarted => {
+                self.pending_press = None;
+            }
+            Message::DragFinished => {
+                // The pointer left items during the drag without telling them
+                self.dehighlight_all();
+            }
+            Message::ColumnClickRelease(target, i) => {
+                if self.pending_press.take() != Some(PendingPress::Column(target, i)) {
+                    return commands;
+                }
                 // Make the clicked column active, with the clicked item selected
                 if let Some(listing) = self.columns.target(target)
                     && let Some(item_path) = listing
@@ -1573,7 +1656,15 @@ impl Tab {
                     log::warn!("no item for click index {click_i_opt:?}");
                 }
             }
+            Message::Click(Some(i)) if self.defers_press(i, mod_ctrl, mod_shift) => {
+                self.column_context = None;
+                self.edit_location = None;
+                self.pending_press = Some(PendingPress::Active(i));
+                // Lets the drag start, carrying the pressed item
+                self.selected_clicked = true;
+            }
             Message::Click(click_i_opt) => {
+                self.pending_press = None;
                 self.column_context = None;
                 self.selected_clicked = false;
                 self.edit_location = None;
@@ -4320,8 +4411,13 @@ impl Tab {
                         button_row.into()
                     };
 
-                    if item.state.selected || !drag_items.is_empty() {
-                        let dnd_row = if !item.state.selected {
+                    let dragged = match self.pending_press {
+                        Some(PendingPress::Active(pressed)) => pressed == i,
+                        Some(PendingPress::Column(..)) => false,
+                        None => item.state.selected,
+                    };
+                    if dragged || !drag_items.is_empty() {
+                        let dnd_row = if !dragged {
                             Element::from(
                                 space::vertical().height(Length::Fixed(f32::from(row_height))),
                             )
@@ -4397,7 +4493,7 @@ impl Tab {
                             .spacing(space_xxs)
                             .into()
                         };
-                        if item.state.selected {
+                        if dragged {
                             drag_items.push(
                                 widget::container(button(dnd_row))
                                     .width(Length::Shrink)
@@ -4527,6 +4623,7 @@ impl Tab {
                     )),
             )
             .on_press(move |_| Message::ColumnClick(target, i))
+            .on_release(move |_| Message::ColumnClickRelease(target, i))
             .on_double_click(move |_| Message::ColumnDoubleClick(target, i))
             .on_right_press_no_capture()
             .on_right_press(move |_| Message::ColumnRightClick(target, i));
@@ -4589,7 +4686,21 @@ impl Tab {
                 .push(column_divider());
         }
 
-        let (drag_list, active, can_scroll) = self.list_view_inner(Some(COLUMN_WIDTH));
+        let (mut drag_list, active, can_scroll) = self.list_view_inner(Some(COLUMN_WIDTH));
+        if let Some(PendingPress::Column(target, i)) = self.pending_press
+            && let Some(item) = self
+                .columns
+                .target(target)
+                .and_then(|listing| listing.items.as_ref()?.get(i))
+        {
+            let icon_size = self.config.icon_sizes.list();
+            let row_height = icon_size + 2 * theme::spacing().space_xxs;
+            drag_list = Some(
+                widget::container(self.columns_row(item, icon_size, row_height))
+                    .width(Length::Fixed(COLUMN_WIDTH))
+                    .into(),
+            );
+        }
         // Unlike the list view, no id_container: the active column moves between positions,
         // and grafting its old widget state onto the new position panics in libcosmic
         let active: Element<_> = if can_scroll {
@@ -4657,24 +4768,12 @@ impl Tab {
             View::Columns => self.columns_view(),
         };
         item_view = widget::container(item_view).width(Length::Fill).into();
-        let files = self
-            .items_opt
-            .as_ref()
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|item| {
-                        if item.state.selected {
-                            item.path_opt().cloned()
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Box<[PathBuf]>>()
-            })
-            .unwrap_or_default();
+        let files = self.drag_paths();
         let item_view =
-            DndSource::<Message, ClipboardCopy>::with_id(item_view, Id::new("tab-view"));
+            DndSource::<Message, ClipboardCopy>::with_id(item_view, Id::new("tab-view"))
+                .on_start(Some(Message::DragStarted))
+                .on_finish(Some(Message::DragFinished))
+                .on_cancel(Some(Message::DragFinished));
 
         let view = self.config.view;
         let item_view = match drag_list {
@@ -6479,10 +6578,7 @@ mod tests {
             .iter()
             .position(|item| item.path_opt() == Some(&other))
             .expect("other folder should be listed in root");
-        tab.update(
-            Message::ColumnClick(ColumnTarget::Ancestor(0), i),
-            Modifiers::empty(),
-        );
+        columns_click(&mut tab, ColumnTarget::Ancestor(0), i);
 
         assert_eq_tab_path(&tab, fs.path());
         assert!(tab.columns.ancestors.is_empty());
@@ -6595,6 +6691,103 @@ mod tests {
         Ok(())
     }
 
+    /// Press and release on an item in a non-active column
+    fn columns_click(tab: &mut Tab, target: ColumnTarget, i: usize) {
+        tab.update(Message::ColumnClick(target, i), Modifiers::empty());
+        tab.update(Message::ColumnClickRelease(target, i), Modifiers::empty());
+    }
+
+    #[test]
+    fn columns_press_on_active_item_waits_for_release() -> io::Result<()> {
+        let (fs, mut tab) = columns_fixture()?;
+        let dir = subdirs(fs.path())?[0].clone();
+        let i = tab
+            .items_opt()
+            .expect("root should be loaded")
+            .iter()
+            .position(|item| item.path_opt() == Some(&dir))
+            .expect("folder should be listed");
+
+        tab.update(Message::Click(Some(i)), Modifiers::empty());
+        assert!(
+            selected_paths(&tab).is_empty(),
+            "a press alone selects nothing"
+        );
+        assert!(tab.columns.preview.is_none(), "nor previews");
+        assert_eq!(
+            &*tab.drag_paths(),
+            [dir.clone()],
+            "but a drag would carry it"
+        );
+
+        tab.update(Message::ClickRelease(Some(i)), Modifiers::empty());
+        assert_eq!(
+            selected_paths(&tab),
+            vec![dir.clone()],
+            "the release selects"
+        );
+        assert_eq!(
+            tab.columns.preview.as_ref().map(|l| l.path.clone()),
+            Some(dir)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn columns_drag_from_active_column_selects_nothing() -> io::Result<()> {
+        let (fs, mut tab) = columns_fixture()?;
+        let dir = subdirs(fs.path())?[0].clone();
+        let i = tab
+            .items_opt()
+            .expect("root should be loaded")
+            .iter()
+            .position(|item| item.path_opt() == Some(&dir))
+            .expect("folder should be listed");
+
+        tab.update(Message::Click(Some(i)), Modifiers::empty());
+        tab.update(Message::DragStarted, Modifiers::empty());
+        // The pointer is released wherever the drop lands
+        tab.update(Message::ClickRelease(Some(i)), Modifiers::empty());
+
+        assert!(selected_paths(&tab).is_empty());
+        assert!(tab.columns.preview.is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn columns_press_in_other_column_waits_for_release() -> io::Result<()> {
+        let (fs, _tab) = columns_fixture()?;
+        let (mut tab, nested, i) = columns_with_root_file(&fs)?;
+        let location = tab.location.clone();
+        let loose = fs.path().join("loose.txt");
+
+        tab.update(
+            Message::ColumnClick(ColumnTarget::Ancestor(0), i),
+            Modifiers::empty(),
+        );
+        assert_eq!(tab.location, location, "a press alone keeps the columns");
+        assert_eq!(selected_paths(&tab), vec![nested.clone()]);
+        assert_eq!(&*tab.drag_paths(), [loose.clone()]);
+
+        // Dragging it away changes nothing
+        tab.update(Message::DragStarted, Modifiers::empty());
+        tab.update(
+            Message::ColumnClickRelease(ColumnTarget::Ancestor(0), i),
+            Modifiers::empty(),
+        );
+        assert_eq!(tab.location, location);
+        assert_eq!(selected_paths(&tab), vec![nested]);
+
+        // A press and release without a drag makes the column active
+        columns_click(&mut tab, ColumnTarget::Ancestor(0), i);
+        assert_eq_tab_path(&tab, fs.path());
+        assert_eq!(selected_paths(&tab), vec![loose]);
+
+        Ok(())
+    }
+
     #[test]
     fn columns_activate_selects_path_in_its_column() -> io::Result<()> {
         let (fs, _tab) = columns_fixture()?;
@@ -6626,10 +6819,7 @@ mod tests {
             .position(|item| item.path_opt() == Some(&file))
             .expect("file should be listed in preview");
 
-        tab.update(
-            Message::ColumnClick(ColumnTarget::Preview, i),
-            Modifiers::empty(),
-        );
+        columns_click(&mut tab, ColumnTarget::Preview, i);
 
         assert_eq_tab_path(&tab, &dir);
         assert_eq!(selected_paths(&tab), vec![file]);
