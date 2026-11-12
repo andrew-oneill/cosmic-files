@@ -6716,7 +6716,7 @@ mod tests {
         assert!(tab.columns.preview.is_none(), "nor previews");
         assert_eq!(
             &*tab.drag_paths(),
-            [dir.clone()],
+            std::slice::from_ref(&dir),
             "but a drag would carry it"
         );
 
@@ -6769,7 +6769,7 @@ mod tests {
         );
         assert_eq!(tab.location, location, "a press alone keeps the columns");
         assert_eq!(selected_paths(&tab), vec![nested.clone()]);
-        assert_eq!(&*tab.drag_paths(), [loose.clone()]);
+        assert_eq!(&*tab.drag_paths(), std::slice::from_ref(&loose));
 
         // Dragging it away changes nothing
         tab.update(Message::DragStarted, Modifiers::empty());
