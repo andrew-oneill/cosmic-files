@@ -111,7 +111,7 @@ sudo apt install --reinstall cosmic-files
 | Up / Down | Move within the active column |
 | Right | Into the selected folder, selecting its first item |
 | Left | To the parent column, selecting the folder left |
-| Drag a divider | Resize the column before it (kept per folder while the tab is open) |
+| Drag a divider | Resize the column before it, while it stays open |
 | Click empty space in another column | Make that column active with nothing selected in it |
 | Click in another column | Make that column active with the item selected |
 | Double-click a file in another column | Open it |
@@ -126,7 +126,7 @@ sudo apt install --reinstall cosmic-files
 Phase 1 (MVP) is in place. Known gaps, roughly in priority order:
 
 - Non-active columns build every row; they should only build visible rows, like the list view.
-- Resized widths are not saved between sessions; long names are ellipsized.
+- Resized widths last only while the column is open; long names are ellipsized.
 - No file chooser dialog support; no thumbnails in non-active columns.
 - Right-to-left layouts are not mirrored.
 - The `view-column-symbolic` icon may be missing from some icon themes.

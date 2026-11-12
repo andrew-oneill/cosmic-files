@@ -728,7 +728,7 @@ pub struct Tab {
     /// handler, which hears the same click next, leaves it be
     column_item_right_clicked: bool,
     pending_press: Option<PendingPress>,
-    /// Columns resized by dragging their divider, kept for this tab's life
+    /// Columns resized by dragging their divider, while they are shown
     column_widths: FxHashMap<ColumnKey, f32>,
     column_resize: Option<ColumnResize>,
     /// Set while a pending press is applied, so it is not deferred again
@@ -1669,6 +1669,11 @@ impl Tab {
             self.columns.scroll_to_end = true;
         }
         self.columns.clear_cache();
+        // A resized width lasts only while its column is shown
+        if !self.column_widths.is_empty() {
+            let shown = self.column_keys();
+            self.column_widths.retain(|key, _| shown.contains(key));
+        }
 
         let mut commands: Vec<_> = self
             .columns
@@ -7539,6 +7544,35 @@ mod tests {
         // Moves after the drag ends change nothing
         tab.update(Message::ColumnResizeMove(900.0), Modifiers::empty());
         assert_eq!(tab.column_width(&root), root_width);
+
+        Ok(())
+    }
+
+    #[test]
+    fn columns_resized_width_forgotten_when_column_closes() -> io::Result<()> {
+        use super::{COLUMN_WIDTH, ColumnKey};
+        let (fs, mut tab) = columns_fixture()?;
+        let dirs = subdirs(fs.path())?;
+        columns_select(&mut tab, vec![dirs[0].clone()]);
+        let preview = ColumnKey::Folder(dirs[0].clone());
+        let root = ColumnKey::Folder(fs.path().to_path_buf());
+
+        // Widen the root and the previewed folder's column
+        for key in [&root, &preview] {
+            tab.update(Message::ColumnResizeStart(key.clone()), Modifiers::empty());
+            let left = tab.column_left(key).expect("column should be shown");
+            tab.update(Message::ColumnResizeMove(left + 400.0), Modifiers::empty());
+            tab.update(Message::ColumnResizeEnd, Modifiers::empty());
+        }
+        let wide = tab.column_width(&preview);
+        assert!(wide > COLUMN_WIDTH);
+
+        // Selecting another folder closes that column; selecting it again starts afresh
+        columns_select(&mut tab, vec![dirs[1].clone()]);
+        columns_select(&mut tab, vec![dirs[0].clone()]);
+        assert_eq!(tab.column_width(&preview), COLUMN_WIDTH);
+        // The root column stayed open throughout, so keeps its width
+        assert!(tab.column_width(&root) > COLUMN_WIDTH);
 
         Ok(())
     }
