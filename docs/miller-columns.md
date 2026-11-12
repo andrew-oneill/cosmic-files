@@ -48,9 +48,30 @@ Phase 1 (MVP) is in place. Known gaps, roughly in priority order:
 - No file chooser dialog support; no thumbnails in non-active columns.
 - Right-to-left layouts are not mirrored.
 - The `view-column-symbolic` icon may be missing from some icon themes.
+- Right-clicking in another column opens the menu at the click point, though the columns
+  may have scrolled under it.
+- A column partly scrolled out on the left draws into the tab's left padding.
+- The active column is not wrapped in an `id_container` like the list view: its position moves,
+  and libcosmic panics ("Downcast on stateless state") when grafted state no longer matches.
 
 ## Testing
 
 - `src/columns.rs` tests cover the root and ancestor rules and listing reuse.
 - `src/tab.rs` tests (prefixed `columns_`) drive `Tab::update` over a temporary folder tree.
 - Manual checks are in `TESTING.md` under "Columns view".
+
+## Visual testing without a desktop
+
+The app runs headless under sway, which suits SSH sessions:
+
+1. Install `sway`, `grim` and `wtype`.
+2. Start `sway` with `WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1` and
+   a private `XDG_RUNTIME_DIR` with a short path (Unix socket paths are limited to 108 bytes).
+3. Before starting the app, hold a virtual keyboard open (`wtype -k Shift_L -s 7000000`):
+   winit does not rebind the keyboard if the seat loses it, as it does after each short `wtype`.
+4. For clicks, keep a virtual pointer open (`zwlr_virtual_pointer_v1`) and drive it; sway's
+   `seat cursor` commands alone reach no client while the seat has no pointer.
+5. Run the app with separate `XDG_CONFIG_HOME`/`XDG_STATE_HOME` under `dbus-run-session`, and
+   take screenshots with `grim`.
+
+Xvfb does not work: the software renderer rejects its window format.

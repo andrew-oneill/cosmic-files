@@ -3965,7 +3965,7 @@ impl Tab {
         let size_width = 100.0;
         let condensed = !columns_mode && size.width < (name_width + modified_width + size_width);
         let is_search = matches!(self.location, Location::Search(..));
-        let icon_size = if columns_mode || condensed || is_search {
+        let icon_size = if !columns_mode && (condensed || is_search) {
             icon_sizes.list_condensed()
         } else {
             icon_sizes.list()
@@ -4006,7 +4006,8 @@ impl Tab {
                     continue;
                 }
 
-                if count > 0 {
+                // Columns have no dividers, matching the other columns
+                if count > 0 && !columns_mode {
                     column = column
                         .push(widget::container(rule::horizontal(1)).padding([0, rule_padding]));
                     y += 1.0;
@@ -4357,7 +4358,7 @@ impl Tab {
         let space_xxs = theme::spacing().space_xxs;
         let mut row = widget::row::with_capacity(3)
             .push(
-                widget::icon::icon(item.icon_handle_list_condensed.clone())
+                widget::icon::icon(item.icon_handle_list.clone())
                     .content_fit(ContentFit::Contain)
                     .size(icon_size),
             )
@@ -4386,7 +4387,7 @@ impl Tab {
         let cosmic_theme::Spacing {
             space_s, space_xxs, ..
         } = theme::spacing();
-        let icon_size = self.config.icon_sizes.list_condensed();
+        let icon_size = self.config.icon_sizes.list();
         let row_height = icon_size + 2 * space_xxs;
 
         let mut column = widget::column::with_capacity(listing.items.as_ref().map_or(0, Vec::len));
@@ -4406,11 +4407,12 @@ impl Tab {
                 widget::button::custom(self.columns_row(item, icon_size, row_height))
                     .width(Length::Fill)
                     .padding([0, space_xxs])
+                    // Muted, not accent: the accent marks the active column's selection
                     .class(button_style(
                         is_selected,
                         false,
                         item.state.cut,
-                        true,
+                        false,
                         true,
                         false,
                     )),
@@ -4460,16 +4462,15 @@ impl Tab {
         }
 
         let (drag_list, active, can_scroll) = self.list_view_inner(Some(COLUMN_WIDTH));
+        // Unlike the list view, no id_container: the active column moves between positions,
+        // and grafting its old widget state onto the new position panics in libcosmic
         let active: Element<_> = if can_scroll {
-            widget::id_container(
-                widget::scrollable(active)
-                    .id(self.scrollable_id.clone())
-                    .on_scroll(Message::Scroll)
-                    .width(Length::Fill)
-                    .height(Length::Fill),
-                widget::Id::new(format!("{}-scrollable", self.scrollable_id)),
-            )
-            .into()
+            widget::scrollable(active)
+                .id(self.scrollable_id.clone())
+                .on_scroll(Message::Scroll)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
         } else {
             active
         };
