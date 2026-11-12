@@ -4179,6 +4179,13 @@ impl Tab {
 
         let mut column = widget::column::with_capacity(3);
         let mut y: f32 = 0.0;
+        // In columns, the gap above the rows scrolls with them, so rows reach the column's
+        // edges. A spacer rather than padding, as row positions are tracked from here
+        if columns_mode {
+            let gap = column_padding();
+            column = column.push(space::vertical().height(gap));
+            y += f32::from(gap);
+        }
 
         let rule_padding = theme::active().cosmic().corner_radii.radius_xs[0] as u16;
 
@@ -4528,6 +4535,12 @@ impl Tab {
                 return (None, self.empty_view(hidden > 0), false);
             }
 
+            if columns_mode {
+                let gap = column_padding();
+                column = column.push(space::vertical().height(gap));
+                y += f32::from(gap);
+            }
+
             // Cache content height for scroll clamping on next frame
             self.content_height_opt.set(Some(y));
         }
@@ -4663,15 +4676,21 @@ impl Tab {
             column = column.push(row);
         }
 
-        let content =
-            column_scrollable(column.padding(padding::left(left_padding).right(right_padding)))
-                .id(listing.scrollable_id.clone())
-                .width(Length::Fill)
-                .height(Length::Fill);
+        // Padding inside the scrollable, so rows scroll to the column's top and bottom edges
+        let content = column_scrollable(
+            column.padding(
+                padding::left(left_padding)
+                    .right(right_padding)
+                    .top(padding)
+                    .bottom(padding),
+            ),
+        )
+        .id(listing.scrollable_id.clone())
+        .width(Length::Fill)
+        .height(Length::Fill);
         widget::container(self.dnd_dest(&Location::Path(listing.path.clone()), content))
             .width(Length::Fixed(COLUMN_WIDTH))
             .height(Length::Fill)
-            .padding([padding, 0])
             .into()
     }
 
@@ -4730,8 +4749,7 @@ impl Tab {
         row = row.push(
             widget::container(active)
                 .width(Length::Fixed(COLUMN_WIDTH))
-                .height(Length::Fill)
-                .padding([column_padding(), 0]),
+                .height(Length::Fill),
         );
 
         if let Some(preview) = &self.columns.preview {
