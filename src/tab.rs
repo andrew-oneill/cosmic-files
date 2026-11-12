@@ -100,6 +100,18 @@ fn context_outline(theme: &theme::Theme) -> widget::container::Style {
     }
 }
 
+/// `content` with the context outline drawn over it, so a row's own background can't hide it
+fn outlined<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    stack![
+        content.into(),
+        widget::container(space::horizontal())
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(context_outline),
+    ]
+    .into()
+}
+
 /// Gap between rows in a column, as the list view's dividers leave
 const COLUMN_ROW_GAP: f32 = 1.0;
 
@@ -4760,7 +4772,7 @@ impl Tab {
             let button: Element<_> = if self.column_context_item_path().is_some()
                 && self.column_context_item_path() == item.path_opt()
             {
-                widget::container(button).style(context_outline).into()
+                outlined(button)
             } else {
                 button.into()
             };
