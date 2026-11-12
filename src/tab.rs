@@ -844,7 +844,10 @@ impl Tab {
         let context = self.column_context_item_path().cloned();
         if let Some(ref mut items) = self.items_opt {
             for item in items.iter_mut() {
-                item.state.cut = context.is_none() && item.state.selected;
+                item.state.cut = match &context {
+                    Some(path) => item.path_opt() == Some(path),
+                    None => item.state.selected,
+                };
             }
         }
         for item in self.columns.items_mut() {
@@ -924,10 +927,15 @@ impl Tab {
     /// The item right-clicked in another column, while its context menu is open
     fn column_context_item(&self) -> Option<&Item> {
         let path = self.column_context_item_path()?;
-        self.columns
-            .listings()
-            .filter_map(|listing| listing.items.as_ref())
+        self.items_opt
+            .iter()
             .flatten()
+            .chain(
+                self.columns
+                    .listings()
+                    .filter_map(|listing| listing.items.as_ref())
+                    .flatten(),
+            )
             .find(|item| item.path_opt() == Some(path))
     }
 
@@ -2607,6 +2615,25 @@ impl Tab {
                     location,
                     Some(selected_paths),
                 ));
+            }
+            Message::RightClick(_point_opt, Some(i))
+                if self.columns.is_active()
+                    && !mod_ctrl
+                    && !mod_shift
+                    && self
+                        .items_opt
+                        .as_ref()
+                        .and_then(|items| items.get(i))
+                        .is_some_and(|item| !item.state.selected) =>
+            {
+                // As in Finder: outline an unselected item and open its menu, leaving the
+                // selection as it is
+                self.last_right_click = Some(i);
+                self.column_context = self
+                    .items_opt
+                    .as_ref()
+                    .and_then(|items| items.get(i)?.path_opt().cloned())
+                    .map(ColumnContext::Item);
             }
             Message::RightClick(_point_opt, click_i_opt) => {
                 self.column_context = None;
@@ -4532,13 +4559,20 @@ impl Tab {
                             )
                         };
 
-                    let button_row = button(row.into());
+                    let mut button_row: Element<_> = button(row.into()).into();
+                    // Outlined while the menu for it is open
+                    if columns_mode
+                        && self.column_context_item_path().is_some()
+                        && self.column_context_item_path() == item.path_opt()
+                    {
+                        button_row = outlined(button_row);
+                    }
                     let button_row: Element<_> = if item.metadata.is_dir()
                         && let Some(location) = item.location_opt.as_ref()
                     {
                         self.dnd_dest(location, button_row)
                     } else {
-                        button_row.into()
+                        button_row
                     };
 
                     let dragged = match self.pending_press {
@@ -7018,6 +7052,37 @@ mod tests {
         let mut selected = selected_paths(&tab);
         selected.sort();
         assert_eq!(selected, expected);
+
+        Ok(())
+    }
+
+    #[test]
+    fn columns_right_click_active_item_outlines_unless_selected() -> io::Result<()> {
+        let (fs, mut tab) = columns_fixture()?;
+        let dir = subdirs(fs.path())?[0].clone();
+        let loose = fs.path().join("loose.txt");
+        columns_select(&mut tab, vec![dir.clone()]);
+        let index_of = |tab: &Tab, path: &Path| {
+            tab.items_opt()
+                .expect("root should be loaded")
+                .iter()
+                .position(|item| item.path_opt().map(PathBuf::as_path) == Some(path))
+                .expect("item should be listed")
+        };
+
+        // An unselected item: the menu acts on it alone, the selection stays
+        let i = index_of(&tab, &loose);
+        tab.update(Message::RightClick(None, Some(i)), Modifiers::empty());
+        tab.update(Message::RightClickBackground, Modifiers::empty());
+        assert_eq!(selected_paths(&tab), vec![dir.clone()]);
+        assert!(tab.columns.preview.is_some(), "the next column stays");
+        assert_eq!(tab.selected_locations(), vec![Location::Path(loose)]);
+        tab.update(Message::ContextMenuClosed, Modifiers::empty());
+
+        // A selected item: the menu acts on the selection
+        let i = index_of(&tab, &dir);
+        tab.update(Message::RightClick(None, Some(i)), Modifiers::empty());
+        assert_eq!(tab.selected_locations(), vec![Location::Path(dir)]);
 
         Ok(())
     }
