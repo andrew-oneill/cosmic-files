@@ -92,6 +92,19 @@ fn column_padding() -> u16 {
     theme::spacing().space_xxs
 }
 
+/// A column's vertical scrollable. Its scrollbar takes layout space while shown, rather than
+/// floating over the rows, so a highlighted row keeps its gap from it.
+fn column_scrollable<'a>(
+    content: impl Into<Element<'a, Message>>,
+) -> scrollable::Scrollable<'a, Message, cosmic::Theme, cosmic::Renderer> {
+    cosmic::iced::widget::scrollable(content).direction(scrollable::Direction::Vertical(
+        scrollable::Scrollbar::new()
+            .width(8)
+            .scroller_width(8)
+            .spacing(0),
+    ))
+}
+
 /// Divider between columns: the theme's divider colour at half strength
 fn column_divider<'a>() -> Element<'a, Message> {
     rule::vertical(1)
@@ -390,6 +403,12 @@ pub enum Message {
     /// Click on an item in a non-active column
     ColumnClick(ColumnTarget, usize),
     ColumnDoubleClick(ColumnTarget, usize),
+    /// Right-click on an item in a non-active column: the context menu acts on it alone,
+    /// without changing the selection
+    ColumnRightClick(ColumnTarget, usize),
+    /// Make the column holding this path active, with the path selected
+    ColumnActivate(PathBuf),
+    ContextMenuClosed,
     /// Bring the columns up to date after the tab changed outside of `update`
     ColumnsSync,
     DoubleClick(Option<usize>),
@@ -596,6 +615,8 @@ pub struct Tab {
     large_image_manager: LargeImageManager,
     pub(crate) columns: ColumnsState,
     columns_scroll_id: widget::Id,
+    /// Item in a non-active column whose context menu is open
+    column_context: Option<PathBuf>,
 }
 
 async fn calculate_dir_size(path: &Path, controller: Controller) -> Result<u64, OperationError> {
@@ -705,6 +726,7 @@ impl Tab {
             large_image_manager: LargeImageManager::new(),
             columns: ColumnsState::default(),
             columns_scroll_id: widget::Id::unique(),
+            column_context: None,
         }
     }
 
@@ -746,16 +768,20 @@ impl Tab {
     }
 
     pub fn cut_selected(&mut self) {
+        let context = self.column_context.clone();
         if let Some(ref mut items) = self.items_opt {
             for item in items.iter_mut() {
-                item.state.cut = item.state.selected;
+                item.state.cut = context.is_none() && item.state.selected;
             }
+        }
+        for item in self.columns.items_mut() {
+            item.state.cut = context.is_some() && item.path_opt() == context.as_ref();
         }
     }
 
     pub fn refresh_cut(&mut self, locations: &[PathBuf]) {
         if let Some(ref mut items) = self.items_opt {
-            for item in items.iter_mut() {
+            for item in items.iter_mut().chain(self.columns.items_mut()) {
                 item.state.cut = false;
                 if let Some(location_path) = item.location_opt.as_ref().and_then(Location::path_opt)
                     && locations.contains(location_path)
@@ -766,21 +792,53 @@ impl Tab {
         }
     }
 
-    pub fn selected_locations(&self) -> Vec<Location> {
-        if let Some(ref items) = self.items_opt {
-            items
-                .iter()
-                .filter_map(|item| {
-                    if item.state.selected {
-                        item.location_opt.clone()
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        } else {
-            Vec::new()
+    /// The items actions apply to: the selection, or while its context menu is open, an item
+    /// right-clicked in another column
+    pub fn selected_items(&self) -> Box<dyn Iterator<Item = &Item> + '_> {
+        match self.column_context_item() {
+            Some(item) => Box::new(std::iter::once(item)),
+            None => Box::new(
+                self.items_opt
+                    .iter()
+                    .flatten()
+                    .filter(|item| item.state.selected),
+            ),
         }
+    }
+
+    /// The item right-clicked in another column, while its context menu is open
+    fn column_context_item(&self) -> Option<&Item> {
+        let path = self.column_context.as_ref()?;
+        self.columns
+            .listings()
+            .filter_map(|listing| listing.items.as_ref())
+            .flatten()
+            .find(|item| item.path_opt() == Some(path))
+    }
+
+    /// An item shown in any column, by location
+    pub fn item_by_location(&self, location: &Location) -> Option<&Item> {
+        self.items_opt
+            .iter()
+            .flatten()
+            .chain(
+                self.columns
+                    .listings()
+                    .filter_map(|listing| listing.items.as_ref())
+                    .flatten(),
+            )
+            .find(|item| item.location_opt.as_ref() == Some(location))
+    }
+
+    /// The path right-clicked in another column, while its context menu is open
+    pub fn column_context(&self) -> Option<&PathBuf> {
+        self.column_context.as_ref()
+    }
+
+    pub fn selected_locations(&self) -> Vec<Location> {
+        self.selected_items()
+            .filter_map(|item| item.location_opt.clone())
+            .collect()
     }
 
     pub fn select_all(&mut self) {
@@ -1223,6 +1281,7 @@ impl Tab {
             self.columns.stash(ColumnListing::new(old_path, items));
         }
         self.location = location.normalize();
+        self.column_context = None;
         self.location_ancestors = self.location.ancestors();
         self.location_title = self.location.title();
         self.edit_location = None;
@@ -1446,6 +1505,7 @@ impl Tab {
                 self.clicked = None;
             }
             Message::ColumnClick(target, i) => {
+                self.column_context = None;
                 // Make the clicked column active, with the clicked item selected
                 if let Some(listing) = self.columns.target(target)
                     && let Some(item_path) = listing
@@ -1472,6 +1532,23 @@ impl Tab {
                     commands.push(Command::OpenFile(vec![path.clone()]));
                 }
             }
+            Message::ColumnRightClick(target, i) => {
+                // The background's right-click handler must not clear the selection
+                self.last_right_click = Some(i);
+                self.column_context = self
+                    .columns
+                    .target(target)
+                    .and_then(|listing| listing.items.as_ref()?.get(i)?.path_opt().cloned());
+            }
+            Message::ColumnActivate(path) => {
+                if let Some(parent) = path.parent() {
+                    cd = Some(Location::Path(parent.to_path_buf()));
+                    cd_select = Some(vec![path]);
+                }
+            }
+            Message::ContextMenuClosed => {
+                self.column_context = None;
+            }
             Message::ColumnsSync => {}
             Message::DoubleClick(click_i_opt) => {
                 if let Some(clicked_item) = self
@@ -1495,6 +1572,7 @@ impl Tab {
                 }
             }
             Message::Click(click_i_opt) => {
+                self.column_context = None;
                 self.selected_clicked = false;
                 self.edit_location = None;
                 if click_i_opt.is_none() {
@@ -2257,10 +2335,6 @@ impl Tab {
                             mode: &Mode,
                             is_only_one_selected: bool,
                         ) -> ResolveResult {
-                            if !item.state.selected {
-                                return ResolveResult::Skip;
-                            }
-
                             let location = match &item.location_opt {
                                 Some(l) => l,
                                 None => return ResolveResult::OpenProperties,
@@ -2294,10 +2368,10 @@ impl Tab {
                             }
                         }
                         let mut open_files = Vec::new();
-                        if let Some(items) = self.items_opt.as_ref() {
-                            let selected_count = items.iter().filter(|i| i.state.selected).count();
+                        {
+                            let selected_count = self.selected_items().count();
 
-                            for item in items.iter() {
+                            for item in self.selected_items() {
                                 match resolve_item(item, &self.mode, selected_count == 1) {
                                     ResolveResult::Open(Some(p)) => open_files.push(p),
                                     ResolveResult::OpenInTab(Some(p)) => {
@@ -2342,6 +2416,7 @@ impl Tab {
                 ));
             }
             Message::RightClick(_point_opt, click_i_opt) => {
+                self.column_context = None;
                 if mod_ctrl || mod_shift {
                     self.update(Message::Click(click_i_opt), modifiers);
                 }
@@ -4448,15 +4523,33 @@ impl Tab {
             .on_press(move |_| Message::ColumnClick(target, i))
             .on_double_click(move |_| Message::ColumnDoubleClick(target, i))
             .on_right_press_no_capture()
-            .on_right_press(move |_| Message::ColumnClick(target, i));
+            .on_right_press(move |_| Message::ColumnRightClick(target, i));
+            // Outlined, not selected, while its context menu is open
+            let button: Element<_> = if self.column_context.as_ref() == item.path_opt() {
+                widget::container(button)
+                    .style(|theme| {
+                        let cosmic = theme.cosmic();
+                        widget::container::Style {
+                            border: Border {
+                                color: cosmic.accent_color().into(),
+                                width: 2.0,
+                                radius: cosmic.radius_xs().into(),
+                            },
+                            ..Default::default()
+                        }
+                    })
+                    .into()
+            } else {
+                button.into()
+            };
             let row = match &item.location_opt {
                 Some(location) if item.metadata.is_dir() => self.dnd_dest(location, button),
-                _ => button.into(),
+                _ => button,
             };
             column = column.push(row);
         }
 
-        let content = widget::scrollable(column.padding([0, padding]))
+        let content = column_scrollable(column.padding([0, padding]))
             .id(listing.scrollable_id.clone())
             .width(Length::Fill)
             .height(Length::Fill);
@@ -4494,7 +4587,7 @@ impl Tab {
         // Unlike the list view, no id_container: the active column moves between positions,
         // and grafting its old widget state onto the new position panics in libcosmic
         let active: Element<_> = if can_scroll {
-            widget::scrollable(active)
+            column_scrollable(active)
                 .id(self.scrollable_id.clone())
                 .on_scroll(Message::Scroll)
                 .width(Length::Fill)
@@ -4644,6 +4737,7 @@ impl Tab {
         )
         .item_width(cosmic::widget::menu::ItemWidth::Uniform(360))
         .on_surface_action(Message::Surface);
+        context_menu.on_close = Some(Message::ContextMenuClosed);
         if let Some(window_id) = self.window_id {
             context_menu = context_menu.window_id(window_id);
         }
@@ -6391,6 +6485,99 @@ mod tests {
             !tab.columns.listings().any(|listing| listing.path == dir),
             "columns deeper than the clicked one should be dropped"
         );
+
+        Ok(())
+    }
+
+    /// A tab in the first folder of a fixture, with its first subfolder selected, and the index
+    /// of `loose.txt` in the root (ancestor) column
+    fn columns_with_root_file(fs: &TempDir) -> io::Result<(Tab, PathBuf, usize)> {
+        let mut tab = columns_tab(fs.path());
+        let dir = subdirs(fs.path())?[0].clone();
+        columns_go(&mut tab, &dir);
+        let nested = subdirs(&dir)?[0].clone();
+        columns_select(&mut tab, vec![nested.clone()]);
+        let loose = fs.path().join("loose.txt");
+        let i = tab.columns.ancestors[0]
+            .items
+            .as_ref()
+            .expect("root should be loaded")
+            .iter()
+            .position(|item| item.path_opt() == Some(&loose))
+            .expect("loose.txt should be listed in root");
+        Ok((tab, nested, i))
+    }
+
+    #[test]
+    fn columns_right_click_other_column_targets_item_without_selecting() -> io::Result<()> {
+        let (fs, _tab) = columns_fixture()?;
+        let (mut tab, nested, i) = columns_with_root_file(&fs)?;
+        let location = tab.location.clone();
+
+        tab.update(
+            Message::ColumnRightClick(ColumnTarget::Ancestor(0), i),
+            Modifiers::empty(),
+        );
+
+        // Nothing moves and the selection stays...
+        assert_eq!(tab.location, location);
+        assert_eq!(selected_paths(&tab), vec![nested]);
+        // ...but actions apply to the right-clicked item alone
+        let loose = Location::Path(fs.path().join("loose.txt"));
+        assert_eq!(tab.selected_locations(), vec![loose.clone()]);
+
+        // Cutting marks it, not the selection
+        tab.cut_selected();
+        let cut: Vec<_> = tab
+            .items_opt()
+            .into_iter()
+            .flatten()
+            .chain(
+                tab.columns
+                    .listings()
+                    .filter_map(|l| l.items.as_ref())
+                    .flatten(),
+            )
+            .filter(|item| item.state.cut)
+            .filter_map(|item| item.location_opt.clone())
+            .collect();
+        assert_eq!(cut, vec![loose]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn columns_right_click_target_cleared_by_close_click_and_navigation() -> io::Result<()> {
+        let (fs, _tab) = columns_fixture()?;
+        let (mut tab, nested, i) = columns_with_root_file(&fs)?;
+        let right_click = Message::ColumnRightClick(ColumnTarget::Ancestor(0), i);
+        let selection = vec![Location::Path(nested)];
+
+        tab.update(right_click.clone(), Modifiers::empty());
+        tab.update(Message::ContextMenuClosed, Modifiers::empty());
+        assert_eq!(tab.selected_locations(), selection, "closing the menu");
+
+        tab.update(right_click.clone(), Modifiers::empty());
+        tab.update(Message::Click(None), Modifiers::empty());
+        assert!(tab.column_context().is_none(), "clicking the active column");
+
+        tab.update(right_click, Modifiers::empty());
+        tab.update(Message::ItemLeft, Modifiers::empty());
+        assert!(tab.column_context().is_none(), "changing folder");
+
+        Ok(())
+    }
+
+    #[test]
+    fn columns_activate_selects_path_in_its_column() -> io::Result<()> {
+        let (fs, _tab) = columns_fixture()?;
+        let (mut tab, _nested, _i) = columns_with_root_file(&fs)?;
+        let loose = fs.path().join("loose.txt");
+
+        tab.update(Message::ColumnActivate(loose.clone()), Modifiers::empty());
+
+        assert_eq_tab_path(&tab, fs.path());
+        assert_eq!(selected_paths(&tab), vec![loose]);
 
         Ok(())
     }

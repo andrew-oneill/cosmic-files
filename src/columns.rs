@@ -182,6 +182,15 @@ impl ColumnsState {
         self.ancestors.iter().chain(self.preview.as_ref())
     }
 
+    /// Items of every non-active column
+    pub fn items_mut(&mut self) -> impl Iterator<Item = &mut Item> {
+        self.ancestors
+            .iter_mut()
+            .chain(self.preview.as_mut())
+            .filter_map(|listing| listing.items.as_mut())
+            .flatten()
+    }
+
     fn listing(&self, path: &Path) -> Option<&ColumnListing> {
         self.listings().find(|l| l.path == path)
     }

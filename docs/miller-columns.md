@@ -65,6 +65,11 @@ sudo apt install --reinstall cosmic-files
   sibling) makes the new folder the root; moving left past the root makes its parent the root.
 - **Reuse.** Moving left or right hands listings between the active column and the others, so
   the new active folder shows at once while its rescan runs.
+- **Right-click in another column.** `Tab::selected_items` is the one source of the items actions
+  apply to. While a context menu opened from another column is open, it yields that item alone
+  (outlined), so the selection and columns stay put. The menu's `on_close`, a click, or a change of
+  folder clears it. "Show details" selects the item first, since the details pane follows the
+  selection.
 - **Sync.** `Tab::sync_columns` runs at the end of every `Tab::update`. It rebuilds the
   ancestors for the current folder, sets the preview from the selection, and returns
   `Command::ScanColumn` for folders that need scanning and a scroll to the rightmost column.
@@ -85,7 +90,7 @@ sudo apt install --reinstall cosmic-files
 | Left | To the parent column, selecting the folder left |
 | Click in another column | Make that column active with the item selected |
 | Double-click a file in another column | Open it |
-| Right-click in another column | Make it active, then the usual context menu |
+| Right-click in another column | Outline the item and open its context menu, leaving the selection as it is |
 
 ## Status
 
@@ -97,8 +102,6 @@ Phase 1 (MVP) is in place. Known gaps, roughly in priority order:
 - No file chooser dialog support; no thumbnails in non-active columns.
 - Right-to-left layouts are not mirrored.
 - The `view-column-symbolic` icon may be missing from some icon themes.
-- Right-clicking in another column opens the menu at the click point, though the columns
-  may have scrolled under it.
 - The active column is not wrapped in an `id_container` like the list view: its position moves,
   and libcosmic panics ("Downcast on stateless state") when grafted state no longer matches.
 

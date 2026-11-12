@@ -84,32 +84,29 @@ pub fn context_menu(
     let mut selected_types: Vec<Mime> = vec![];
     let mut selected_mount_point = 0;
     let mut any_trash_item = false;
-    if let Some(items) = tab.items_opt() {
-        for item in items {
-            if item.state.selected {
-                selected += 1;
-                if item.metadata.is_dir() {
-                    selected_mount_point += i32::from(item.is_mount_point);
-                    selected_dir += 1;
-                }
-                match &item.location_opt {
-                    Some(Location::Trash) | Some(Location::Search(SearchLocation::Trash, ..)) => {
-                        selected_trash_only = true
-                    }
-                    Some(Location::Path(path))
-                        if selected == 1
-                            && path.extension().and_then(|s| s.to_str()) == Some("desktop") =>
-                    {
-                        selected_desktop_entry = Some(&**path);
-                    }
-                    _ => (),
-                }
-                if matches!(&item.metadata, ItemMetadata::Trash { .. }) {
-                    any_trash_item = true;
-                }
-                selected_types.push(item.mime.clone());
-            }
+    // The selection, or the item right-clicked in another column
+    for item in tab.selected_items() {
+        selected += 1;
+        if item.metadata.is_dir() {
+            selected_mount_point += i32::from(item.is_mount_point);
+            selected_dir += 1;
         }
+        match &item.location_opt {
+            Some(Location::Trash) | Some(Location::Search(SearchLocation::Trash, ..)) => {
+                selected_trash_only = true
+            }
+            Some(Location::Path(path))
+                if selected == 1
+                    && path.extension().and_then(|s| s.to_str()) == Some("desktop") =>
+            {
+                selected_desktop_entry = Some(&**path);
+            }
+            _ => (),
+        }
+        if matches!(&item.metadata, ItemMetadata::Trash { .. }) {
+            any_trash_item = true;
+        }
+        selected_types.push(item.mime.clone());
     }
     selected_types.sort_unstable();
     selected_types.dedup();

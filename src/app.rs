@@ -3756,18 +3756,10 @@ impl Application for App {
                     if let Some(tab) = self.tab_model.data_mut::<Tab>(entity)
                         && let Some(path) = tab.location.path_opt()
                     {
-                        if let Some(items) = tab.items_opt() {
-                            paths = items
-                                .iter()
-                                .filter_map(|item| {
-                                    if item.state.selected {
-                                        item.path_opt()
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .collect();
-                        }
+                        paths = tab
+                            .selected_items()
+                            .filter_map(|item| item.path_opt())
+                            .collect();
                         if paths.is_empty() {
                             paths = Box::from([path]);
                         }
@@ -3859,35 +3851,29 @@ impl Application for App {
             },
             Message::OpenWithDialog(entity_opt) => {
                 let entity = entity_opt.unwrap_or_else(|| self.tab_model.active());
-                if let Some(tab) = self.tab_model.data::<Tab>(entity)
-                    && let Some(items) = tab.items_opt()
-                {
-                    for item in items {
-                        if !item.state.selected {
-                            continue;
-                        }
-                        let Some(path) = item.path_opt() else {
-                            continue;
-                        };
-                        return Task::batch([
-                            self.push_dialog(
-                                DialogPage::OpenWith {
-                                    path: path.clone(),
-                                    mime: item.mime.clone(),
-                                    selected: 0,
-                                    store_opt: "x-scheme-handler/mime"
-                                        .parse::<mime_guess::Mime>()
-                                        .ok()
-                                        .and_then(|mime| {
-                                            self.mime_app_cache.get(&mime).first().cloned()
-                                        }),
-                                    search_app_name: String::new(),
-                                },
-                                Some(CONFIRM_OPEN_WITH_BUTTON_ID.clone()),
-                            ),
-                            widget::text_input::focus(self.dialog_text_input.clone()),
-                        ]);
-                    }
+                let first = self.tab_model.data::<Tab>(entity).and_then(|tab| {
+                    tab.selected_items()
+                        .find_map(|item| Some((item.path_opt()?.clone(), item.mime.clone())))
+                });
+                if let Some((path, mime)) = first {
+                    return Task::batch([
+                        self.push_dialog(
+                            DialogPage::OpenWith {
+                                path,
+                                mime,
+                                selected: 0,
+                                store_opt: "x-scheme-handler/mime"
+                                    .parse::<mime_guess::Mime>()
+                                    .ok()
+                                    .and_then(|mime| {
+                                        self.mime_app_cache.get(&mime).first().cloned()
+                                    }),
+                                search_app_name: String::new(),
+                            },
+                            Some(CONFIRM_OPEN_WITH_BUTTON_ID.clone()),
+                        ),
+                        widget::text_input::focus(self.dialog_text_input.clone()),
+                    ]);
                 }
             }
             Message::OpenWithSelection(index) => {
@@ -4196,6 +4182,21 @@ impl Application for App {
                 }
             }
             Message::Preview(entity_opt) => {
+                // The details pane follows the selection, so select the item first
+                let entity = entity_opt.unwrap_or_else(|| self.tab_model.active());
+                if let Some(path) = self
+                    .tab_model
+                    .data::<Tab>(entity)
+                    .and_then(|tab| tab.column_context().cloned())
+                {
+                    return Task::batch([
+                        self.update(Message::TabMessage(
+                            Some(entity),
+                            tab::Message::ColumnActivate(path),
+                        )),
+                        self.update(Message::Preview(entity_opt)),
+                    ]);
+                }
                 match self.mode {
                     Mode::App => {
                         let show_details = !self.config.show_details;
@@ -4271,18 +4272,10 @@ impl Application for App {
             }
             Message::Rename(entity_opt) => {
                 let entity = entity_opt.unwrap_or_else(|| self.tab_model.active());
-                if let Some(tab) = self.tab_model.data_mut::<Tab>(entity)
-                    && let Some(items) = tab.items_opt()
-                {
-                    let selected: Box<[_]> = items
-                        .iter()
-                        .filter_map(|item| {
-                            if item.state.selected {
-                                item.path_opt().cloned()
-                            } else {
-                                None
-                            }
-                        })
+                if let Some(tab) = self.tab_model.data_mut::<Tab>(entity) {
+                    let selected: Box<[_]> = tab
+                        .selected_items()
+                        .filter_map(|item| item.path_opt().cloned())
                         .collect();
                     if !selected.is_empty() {
                         //TODO: batch rename
@@ -5490,8 +5483,7 @@ impl Application for App {
                     .tab_model
                     .data::<Tab>(entity)
                     .and_then(|tab| {
-                        let mut selected =
-                            tab.items_opt()?.iter().filter(|item| item.state.selected);
+                        let mut selected = tab.selected_items();
 
                         match (selected.next(), selected.next()) {
                             // Exactly one item
