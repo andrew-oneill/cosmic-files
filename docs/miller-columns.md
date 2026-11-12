@@ -20,13 +20,31 @@ cargo build --release
 Running from `target/` leaves any installed cosmic-files untouched. Switch to the columns view
 with Ctrl+3 or View → Columns view. To update, `git pull` and build again.
 
-- **Homebrew:** if Homebrew's `pkg-config` comes first on `PATH`, it cannot find the system
-  libraries and the build fails. Build with `PKG_CONFIG=/usr/bin/pkg-config cargo build --release`.
-- **Installing system-wide:** `sudo apt install just`, then `just build-release` and
-  `sudo just install`. This overwrites the distro's copy in `/usr`, which the next package update
-  restores; `sudo apt install --reinstall cosmic-files` puts it back by hand.
-- **Shared settings:** this build and the stock cosmic-files share their settings. The stock
-  version does not know the columns view and falls back to its default view if it reads it.
+If Homebrew's `pkg-config` comes first on `PATH`, it cannot find the system libraries and the
+build fails. Point the build at the system one:
+
+```sh
+PKG_CONFIG=/usr/bin/pkg-config cargo build --release
+```
+
+This build and the stock cosmic-files share their settings. The stock version does not know the
+columns view and falls back to its default view if it reads it.
+
+### Installing system-wide
+
+This replaces the distro's copy in `/usr`, which the next package update restores.
+
+```sh
+sudo apt install just
+just build-release
+sudo just install
+```
+
+To go back to the stock version:
+
+```sh
+sudo apt install --reinstall cosmic-files
+```
 
 ## Design
 
