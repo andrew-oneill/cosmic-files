@@ -1800,6 +1800,9 @@ impl Tab {
                 self.selected_clicked = true;
             }
             Message::ColumnResizeStart(key) => {
+                // The press was on a divider, so it must not start dragging the selection
+                self.selected_clicked = false;
+                self.pending_press = None;
                 if let Some(left) = self.column_left(&key) {
                     self.column_resize = Some(ColumnResize { key, left });
                 }
@@ -7516,6 +7519,34 @@ mod tests {
         // Moves after the drag ends change nothing
         tab.update(Message::ColumnResizeMove(900.0), Modifiers::empty());
         assert_eq!(tab.column_width(&root), root_width);
+
+        Ok(())
+    }
+
+    #[test]
+    fn columns_resizing_does_not_drag_the_selection() -> io::Result<()> {
+        use super::ColumnKey;
+        let (fs, mut tab) = columns_fixture()?;
+        let dir = subdirs(fs.path())?[0].clone();
+        let i = tab
+            .items_opt()
+            .expect("root should be loaded")
+            .iter()
+            .position(|item| item.path_opt() == Some(&dir))
+            .expect("folder should be listed");
+        // Clicking the folder arms dragging it
+        tab.update(Message::Click(Some(i)), Modifiers::empty());
+        tab.update(Message::ClickRelease(Some(i)), Modifiers::empty());
+        assert!(tab.selected_clicked);
+
+        tab.update(
+            Message::ColumnResizeStart(ColumnKey::Folder(fs.path().to_path_buf())),
+            Modifiers::empty(),
+        );
+        assert!(
+            !tab.selected_clicked,
+            "a divider press must not drag the selection"
+        );
 
         Ok(())
     }
