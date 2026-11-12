@@ -105,6 +105,13 @@ fn column_scrollable<'a>(
     ))
 }
 
+/// Left and right padding of a column's rows: none on the left of the leftmost column, so its
+/// rows start at the location bar's left end as the list view's do
+fn column_side_padding(leftmost: bool) -> (u16, u16) {
+    let padding = column_padding();
+    (if leftmost { 0 } else { padding }, padding)
+}
+
 /// Divider between columns: the theme's divider colour at half strength
 fn column_divider<'a>() -> Element<'a, Message> {
     rule::vertical(1)
@@ -4130,10 +4137,11 @@ impl Tab {
         self.list_view_inner(None)
     }
 
-    /// The list view, or with `column_width` the active column of the columns view
+    /// The list view, or with `column` the active column of the columns view: its width, and
+    /// whether it is the leftmost column
     fn list_view_inner(
         &self,
-        column_width: Option<f32>,
+        column: Option<(f32, bool)>,
     ) -> (
         Option<Element<'static, Message>>,
         Element<'_, Message>,
@@ -4150,12 +4158,11 @@ impl Tab {
         } = self.config;
 
         let size = self.size_opt.get().unwrap_or_else(|| Size::new(0.0, 0.0));
-        let columns_mode = column_width.is_some();
-        let size = column_width.map_or(size, |width| Size::new(width, size.height));
-        let side_padding = if columns_mode {
-            column_padding()
-        } else {
-            space_s
+        let columns_mode = column.is_some();
+        let size = column.map_or(size, |(width, _)| Size::new(width, size.height));
+        let (left_padding, right_padding) = match column {
+            Some((_, leftmost)) => column_side_padding(leftmost),
+            None => (space_s, space_s),
         };
         //TODO: allow resizing?
         let name_width = 300.0;
@@ -4213,9 +4220,9 @@ impl Tab {
 
                 item.state.pos_opt.set(Some((count, 0)));
                 let item_rect = Rectangle::new(
-                    Point::new(f32::from(side_padding), y),
+                    Point::new(f32::from(left_padding), y),
                     Size::new(
-                        size.width - f32::from(2 * side_padding),
+                        size.width - f32::from(left_padding + right_padding),
                         f32::from(row_height),
                     ),
                 );
@@ -4542,14 +4549,16 @@ impl Tab {
         let drag_col = (!drag_items.is_empty())
             .then(|| Element::from(widget::column::with_children(drag_items)));
 
-        let mouse_area = mouse_area::MouseArea::new(column.padding([0, side_padding]))
-            .with_id(Id::new("list-view"))
-            .on_press(|_| Message::Click(None))
-            .on_auto_scroll(Message::AutoScroll)
-            .on_drag(move |rect_opt| self.on_drag(rect_opt))
-            .on_drag_end(|_| Message::DragEnd)
-            .show_drag_rect(self.mode.multiple())
-            .on_release(|_| Message::ClickRelease(None));
+        let mouse_area = mouse_area::MouseArea::new(
+            column.padding(padding::left(left_padding).right(right_padding)),
+        )
+        .with_id(Id::new("list-view"))
+        .on_press(|_| Message::Click(None))
+        .on_auto_scroll(Message::AutoScroll)
+        .on_drag(move |rect_opt| self.on_drag(rect_opt))
+        .on_drag_end(|_| Message::DragEnd)
+        .show_drag_rect(self.mode.multiple())
+        .on_release(|_| Message::ClickRelease(None));
 
         (drag_col, mouse_area.into(), true)
     }
@@ -4589,9 +4598,11 @@ impl Tab {
         listing: &'a ColumnListing,
         target: ColumnTarget,
         selected: Option<&Path>,
+        leftmost: bool,
     ) -> Element<'a, Message> {
         let space_xxs = theme::spacing().space_xxs;
         let padding = column_padding();
+        let (left_padding, right_padding) = column_side_padding(leftmost);
         let icon_size = self.config.icon_sizes.list();
         let row_height = icon_size + 2 * space_xxs;
 
@@ -4652,10 +4663,11 @@ impl Tab {
             column = column.push(row);
         }
 
-        let content = column_scrollable(column.padding([0, padding]))
-            .id(listing.scrollable_id.clone())
-            .width(Length::Fill)
-            .height(Length::Fill);
+        let content =
+            column_scrollable(column.padding(padding::left(left_padding).right(right_padding)))
+                .id(listing.scrollable_id.clone())
+                .width(Length::Fill)
+                .height(Length::Fill);
         widget::container(self.dnd_dest(&Location::Path(listing.path.clone()), content))
             .width(Length::Fixed(COLUMN_WIDTH))
             .height(Length::Fill)
@@ -4682,11 +4694,13 @@ impl Tab {
                     listing,
                     ColumnTarget::Ancestor(i),
                     self.columns.selected_child(i),
+                    i == 0,
                 ))
                 .push(column_divider());
         }
 
-        let (mut drag_list, active, can_scroll) = self.list_view_inner(Some(COLUMN_WIDTH));
+        let (mut drag_list, active, can_scroll) =
+            self.list_view_inner(Some((COLUMN_WIDTH, self.columns.ancestors.is_empty())));
         if let Some(PendingPress::Column(target, i)) = self.pending_press
             && let Some(item) = self
                 .columns
@@ -4725,6 +4739,7 @@ impl Tab {
                 preview,
                 ColumnTarget::Preview,
                 None,
+                false,
             ));
         }
 
@@ -4732,10 +4747,9 @@ impl Tab {
             .id(self.columns_scroll_id.clone())
             .width(Length::Fill)
             .height(Length::Fill);
-        // Outside the scrollable, so columns scrolled out are clipped at the location bar's
-        // edges, and rows (inset by column_padding) line up with it
-        let space_s = theme::spacing().space_s;
-        let view = widget::container(view).padding([0, space_s.saturating_sub(column_padding())]);
+        // Outside the scrollable, so columns scrolled out are clipped at the location bar's ends,
+        // as the list view's rows are
+        let view = widget::container(view).padding([0, theme::spacing().space_s]);
         (drag_list, view.into(), false)
     }
 
