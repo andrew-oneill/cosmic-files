@@ -461,6 +461,7 @@ pub enum Message {
     DragFinished,
     /// Make the column holding this path active, with the path selected
     ColumnActivate(PathBuf),
+    ContextMenuOpened,
     ContextMenuClosed,
     /// Bring the columns up to date after the tab changed outside of `update`
     ColumnsSync,
@@ -691,6 +692,10 @@ pub struct Tab {
     columns_scroll_id: widget::Id,
     /// What the context menu opened from a non-active column acts on, while it is open
     column_context: Option<ColumnContext>,
+    /// What the next context menu to open acts on, set by the right-click that opens it.
+    /// Right-clicking while a menu is open reports the old menu closed after the new
+    /// right-click, so the target is applied again when the new menu opens.
+    context_on_open: Option<Option<ColumnContext>>,
     /// Set by a right-click on an item in a non-active column, so its column's background
     /// handler, which hears the same click next, leaves it be
     column_item_right_clicked: bool,
@@ -807,6 +812,7 @@ impl Tab {
             columns: ColumnsState::default(),
             columns_scroll_id: widget::Id::unique(),
             column_context: None,
+            context_on_open: None,
             column_item_right_clicked: false,
             pending_press: None,
             applying_press: false,
@@ -973,6 +979,17 @@ impl Tab {
             Some(ColumnContext::Item(path)) => Some(path),
             _ => None,
         }
+    }
+
+    /// Set what the context menu about to open acts on (`None`: the selection)
+    fn set_context(&mut self, context: Option<ColumnContext>) {
+        self.column_context = context.clone();
+        self.context_on_open = Some(context);
+    }
+
+    fn clear_context(&mut self) {
+        self.column_context = None;
+        self.context_on_open = None;
     }
 
     /// The column folder right-clicked on its empty space, while its context menu is open
@@ -1436,7 +1453,7 @@ impl Tab {
             self.columns.stash(ColumnListing::new(old_path, items));
         }
         self.location = location.normalize();
-        self.column_context = None;
+        self.clear_context();
         self.location_ancestors = self.location.ancestors();
         self.location_title = self.location.title();
         self.edit_location = None;
@@ -1688,7 +1705,7 @@ impl Tab {
             }
             Message::ColumnClick(target, i) => {
                 // Wait for the release, so a drag leaves the columns as they are
-                self.column_context = None;
+                self.clear_context();
                 self.pending_press = Some(PendingPress::Column(target, i));
                 self.selected_clicked = true;
             }
@@ -1733,27 +1750,34 @@ impl Tab {
                 // The background's right-click handler must not clear the selection
                 self.last_right_click = Some(i);
                 self.column_item_right_clicked = true;
-                self.column_context = self
+                let context = self
                     .columns
                     .target(target)
                     .and_then(|listing| listing.items.as_ref()?.get(i)?.path_opt().cloned())
                     .map(ColumnContext::Item);
+                self.set_context(context);
             }
             Message::ColumnBackgroundRightClick(target) => {
                 // The same click on an item already chose what the menu acts on
                 if !std::mem::take(&mut self.column_item_right_clicked) {
                     // The tab's background handler must not clear the selection
                     self.last_right_click = Some(usize::MAX);
-                    self.column_context = self
+                    let context = self
                         .columns
                         .target(target)
                         .map(|listing| ColumnContext::Folder(listing.path.clone()));
+                    self.set_context(context);
                 }
             }
             Message::ColumnActivate(path) => {
                 if let Some(parent) = path.parent() {
                     cd = Some(Location::Path(parent.to_path_buf()));
                     cd_select = Some(vec![path]);
+                }
+            }
+            Message::ContextMenuOpened => {
+                if let Some(context) = self.context_on_open.take() {
+                    self.column_context = context;
                 }
             }
             Message::ContextMenuClosed => {
@@ -1782,7 +1806,7 @@ impl Tab {
                 }
             }
             Message::Click(Some(i)) if self.defers_press(i, mod_ctrl, mod_shift) => {
-                self.column_context = None;
+                self.clear_context();
                 self.edit_location = None;
                 self.pending_press = Some(PendingPress::Active(i));
                 // Lets the drag start, carrying the pressed item
@@ -1790,7 +1814,7 @@ impl Tab {
             }
             Message::Click(click_i_opt) => {
                 self.pending_press = None;
-                self.column_context = None;
+                self.clear_context();
                 self.selected_clicked = false;
                 self.edit_location = None;
                 if click_i_opt.is_none() {
@@ -1949,7 +1973,8 @@ impl Tab {
                 {
                     // In columns, keep the selection (and the column it shows); the menu acts
                     // on this column's folder, as for the other columns
-                    self.column_context = Some(ColumnContext::Folder(path.clone()));
+                    let context = ColumnContext::Folder(path.clone());
+                    self.set_context(Some(context));
                 } else if on_empty_space
                     //TODO: hack for clearing selecting when right clicking empty space
                     && let Some(ref mut items) = self.items_opt
@@ -2658,14 +2683,15 @@ impl Tab {
                 // As in Finder: outline an unselected item and open its menu, leaving the
                 // selection as it is
                 self.last_right_click = Some(i);
-                self.column_context = self
+                let context = self
                     .items_opt
                     .as_ref()
                     .and_then(|items| items.get(i)?.path_opt().cloned())
                     .map(ColumnContext::Item);
+                self.set_context(context);
             }
             Message::RightClick(_point_opt, click_i_opt) => {
-                self.column_context = None;
+                self.set_context(None);
                 if mod_ctrl || mod_shift {
                     self.update(Message::Click(click_i_opt), modifiers);
                 }
@@ -5161,6 +5187,7 @@ impl Tab {
         )
         .item_width(cosmic::widget::menu::ItemWidth::Uniform(360))
         .on_surface_action(Message::Surface);
+        context_menu.on_open = Some(Message::ContextMenuOpened);
         context_menu.on_close = Some(Message::ContextMenuClosed);
         if let Some(window_id) = self.window_id {
             context_menu = context_menu.window_id(window_id);
@@ -7215,6 +7242,32 @@ mod tests {
         let i = index_of(&tab, &dir);
         tab.update(Message::RightClick(None, Some(i)), Modifiers::empty());
         assert_eq!(tab.selected_locations(), vec![Location::Path(dir)]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn columns_right_click_again_while_menu_open_keeps_target() -> io::Result<()> {
+        let (fs, mut tab) = columns_fixture()?;
+        let dir = subdirs(fs.path())?[0].clone();
+        columns_select(&mut tab, vec![dir.clone()]);
+        let right_click_space = |tab: &mut Tab| {
+            tab.update(
+                Message::ColumnBackgroundRightClick(ColumnTarget::Preview),
+                Modifiers::empty(),
+            );
+            tab.update(Message::RightClickBackground, Modifiers::empty());
+        };
+
+        right_click_space(&mut tab);
+        tab.update(Message::ContextMenuOpened, Modifiers::empty());
+        // Again with the menu open: the old menu reports closing after the new right-click
+        right_click_space(&mut tab);
+        tab.update(Message::ContextMenuClosed, Modifiers::empty());
+        tab.update(Message::ContextMenuOpened, Modifiers::empty());
+
+        assert_eq!(tab.column_context_folder(), Some(&dir));
+        assert_eq!(selected_paths(&tab), vec![dir]);
 
         Ok(())
     }
