@@ -1893,8 +1893,16 @@ impl Tab {
             Message::RightClickBackground => {
                 self.edit_location = None;
 
-                //TODO: hack for clearing selecting when right clicking empty space
-                if self.last_right_click.take().is_none()
+                let on_empty_space = self.last_right_click.take().is_none();
+                if on_empty_space
+                    && self.columns.is_active()
+                    && let Some(path) = self.location.path_opt()
+                {
+                    // In columns, keep the selection (and the column it shows); the menu acts
+                    // on this column's folder, as for the other columns
+                    self.column_context = Some(ColumnContext::Folder(path.clone()));
+                } else if on_empty_space
+                    //TODO: hack for clearing selecting when right clicking empty space
                     && let Some(ref mut items) = self.items_opt
                 {
                     for item in items.iter_mut() {
@@ -2750,7 +2758,10 @@ impl Tab {
                     self.search_context = None;
                 }
             }
-            Message::SelectAll if self.column_context_folder().is_some() => {
+            Message::SelectAll
+                if self.column_context_folder().is_some()
+                    && self.column_context_folder() != self.location.path_opt() =>
+            {
                 // From another column's menu: that column becomes active with all of it selected
                 if let Some(folder) = self.column_context_folder().cloned() {
                     let paths = self
@@ -4839,11 +4850,16 @@ impl Tab {
         } else {
             active
         };
-        row = row.push(
-            widget::container(active)
-                .width(Length::Fixed(COLUMN_WIDTH))
-                .height(Length::Fill),
-        );
+        let mut active = widget::container(active)
+            .width(Length::Fixed(COLUMN_WIDTH))
+            .height(Length::Fill);
+        // Outlined while the menu for its empty space is open
+        if self.column_context_folder().is_some()
+            && self.column_context_folder() == self.location.path_opt()
+        {
+            active = active.style(context_outline);
+        }
+        row = row.push(active);
 
         if let Some(preview) = &self.columns.preview {
             row = row.push(column_divider()).push(self.column_listing_view(
@@ -6955,6 +6971,34 @@ mod tests {
 
         assert_eq_tab_path(&tab, &dir);
         let mut expected: Vec<_> = read_dir_sorted(&dir)?
+            .into_iter()
+            .filter(|path| !is_hidden(path))
+            .collect();
+        expected.sort();
+        let mut selected = selected_paths(&tab);
+        selected.sort();
+        assert_eq!(selected, expected);
+
+        Ok(())
+    }
+
+    #[test]
+    fn columns_right_click_active_column_space_keeps_selection() -> io::Result<()> {
+        let (fs, mut tab) = columns_fixture()?;
+        let dir = subdirs(fs.path())?[0].clone();
+        columns_select(&mut tab, vec![dir.clone()]);
+
+        tab.update(Message::RightClickBackground, Modifiers::empty());
+
+        assert_eq!(selected_paths(&tab), vec![dir.clone()]);
+        assert!(tab.columns.preview.is_some(), "the next column stays");
+        assert_eq!(tab.selected_items().count(), 0, "the menu is the folder's");
+        assert_eq!(tab.context_folder(), Some(&fs.path().to_path_buf()));
+
+        // Select all from that menu selects in this column
+        tab.update(Message::SelectAll, Modifiers::empty());
+        assert_eq_tab_path(&tab, fs.path());
+        let mut expected: Vec<_> = read_dir_sorted(fs.path())?
             .into_iter()
             .filter(|path| !is_hidden(path))
             .collect();
