@@ -56,6 +56,7 @@ This document provides a regression testing checklist for COSMIC Files. The chec
 - [ ] Dragging an unselected item (in any column) neither selects it nor changes the columns; a plain click still selects it.
 - [ ] Creating, renaming or deleting a file in a folder shown as a non-active column updates that column.
 - [ ] Hidden files and the sort order apply to every column.
+- [ ] Dragging a divider resizes the column before it; the divider after the last column resizes the last column.
 - [ ] Many columns scroll horizontally, keeping the rightmost column in view.
 - [ ] Search, Trash and Recents fall back to the list view while Columns is selected.
 

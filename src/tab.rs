@@ -122,6 +122,11 @@ fn muted_text(theme: &theme::Theme) -> cosmic::iced::widget::text::Style {
     }
 }
 
+/// Width of the divider between columns, which is also the handle for resizing them
+const COLUMN_HANDLE_WIDTH: f32 = 5.0;
+const MIN_COLUMN_WIDTH: f32 = 140.0;
+const MAX_COLUMN_WIDTH: f32 = 1000.0;
+
 /// Gap between rows in a column, as the list view's dividers leave
 const COLUMN_ROW_GAP: f32 = 1.0;
 
@@ -457,6 +462,11 @@ pub enum Message {
     ColumnBackgroundClick(ColumnTarget),
     /// Mouse released on an item in a non-active column
     ColumnClickRelease(ColumnTarget, usize),
+    /// Press on the divider after a column, to resize it
+    ColumnResizeStart(ColumnKey),
+    /// Pointer moved while resizing a column, in the columns row's coordinates
+    ColumnResizeMove(f32),
+    ColumnResizeEnd,
     /// A drag of items out of this tab began
     DragStarted,
     /// A drag of items out of this tab was dropped or cancelled
@@ -566,6 +576,22 @@ enum ColumnContext {
     Item(PathBuf),
     /// The column's folder, right-clicked on its empty space
     Folder(PathBuf),
+}
+
+/// Which column a width belongs to
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum ColumnKey {
+    /// A folder's column
+    Folder(PathBuf),
+    /// The selected file's preview column
+    FilePreview,
+}
+
+/// A column being resized by dragging the divider after it
+struct ColumnResize {
+    key: ColumnKey,
+    /// The column's left edge in the columns row
+    left: f32,
 }
 
 /// An item pressed in the columns view whose click waits for the mouse release, so dragging it
@@ -702,6 +728,9 @@ pub struct Tab {
     /// handler, which hears the same click next, leaves it be
     column_item_right_clicked: bool,
     pending_press: Option<PendingPress>,
+    /// Columns resized by dragging their divider, kept for this tab's life
+    column_widths: FxHashMap<ColumnKey, f32>,
+    column_resize: Option<ColumnResize>,
     /// Set while a pending press is applied, so it is not deferred again
     applying_press: bool,
 }
@@ -817,6 +846,8 @@ impl Tab {
             context_on_open: None,
             column_item_right_clicked: false,
             pending_press: None,
+            column_widths: FxHashMap::default(),
+            column_resize: None,
             applying_press: false,
         }
     }
@@ -981,6 +1012,58 @@ impl Tab {
             Some(ColumnContext::Item(path)) => Some(path),
             _ => None,
         }
+    }
+
+    /// A column's width: as resized, or the default
+    fn column_width(&self, key: &ColumnKey) -> f32 {
+        self.column_widths.get(key).copied().unwrap_or(COLUMN_WIDTH)
+    }
+
+    /// The shown columns, left to right
+    fn column_keys(&self) -> Vec<ColumnKey> {
+        let mut keys: Vec<_> = self
+            .columns
+            .ancestors
+            .iter()
+            .map(|listing| ColumnKey::Folder(listing.path.clone()))
+            .collect();
+        keys.push(ColumnKey::Folder(
+            self.location.path_opt().cloned().unwrap_or_default(),
+        ));
+        if let Some(preview) = &self.columns.preview {
+            keys.push(ColumnKey::Folder(preview.path.clone()));
+        } else if self.single_selected_file().is_some() {
+            keys.push(ColumnKey::FilePreview);
+        }
+        keys
+    }
+
+    /// The left edge of a shown column in the columns row
+    fn column_left(&self, key: &ColumnKey) -> Option<f32> {
+        let mut left = 0.0;
+        for shown in self.column_keys() {
+            if &shown == key {
+                return Some(left);
+            }
+            left += self.column_width(&shown) + COLUMN_HANDLE_WIDTH;
+        }
+        None
+    }
+
+    fn folder_column_width(&self, path: &Path) -> f32 {
+        self.column_width(&ColumnKey::Folder(path.to_path_buf()))
+    }
+
+    /// The divider after a column, which resizes that column when dragged
+    fn column_resize_handle<'a>(&self, key: ColumnKey) -> Element<'a, Message> {
+        cosmic::iced::widget::mouse_area(
+            widget::container(column_divider())
+                .center_x(Length::Fixed(COLUMN_HANDLE_WIDTH))
+                .height(Length::Fill),
+        )
+        .interaction(cosmic::iced::mouse::Interaction::ResizingHorizontally)
+        .on_press(Message::ColumnResizeStart(key))
+        .into()
     }
 
     /// Set what the context menu about to open acts on (`None`: the selection)
@@ -1710,6 +1793,22 @@ impl Tab {
                 self.clear_context();
                 self.pending_press = Some(PendingPress::Column(target, i));
                 self.selected_clicked = true;
+            }
+            Message::ColumnResizeStart(key) => {
+                if let Some(left) = self.column_left(&key) {
+                    self.column_resize = Some(ColumnResize { key, left });
+                }
+            }
+            Message::ColumnResizeMove(x) => {
+                // The divider follows the pointer
+                if let Some(resize) = &self.column_resize {
+                    let width = (x - resize.left - COLUMN_HANDLE_WIDTH / 2.0)
+                        .clamp(MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH);
+                    self.column_widths.insert(resize.key.clone(), width);
+                }
+            }
+            Message::ColumnResizeEnd => {
+                self.column_resize = None;
             }
             Message::DragStarted => {
                 self.pending_press = None;
@@ -4829,6 +4928,7 @@ impl Tab {
     ) -> Element<'a, Message> {
         let space_xxs = theme::spacing().space_xxs;
         let padding = column_padding();
+        let column_width = self.folder_column_width(&listing.path);
         let (left_padding, right_padding) = column_side_padding(leftmost);
         let icon_size = self.config.icon_sizes.list();
         let row_height = icon_size + 2 * space_xxs;
@@ -4900,7 +5000,7 @@ impl Tab {
             .on_right_press(move |_| Message::ColumnBackgroundRightClick(target));
         let mut container =
             widget::container(self.dnd_dest(&Location::Path(listing.path.clone()), content))
-                .width(Length::Fixed(COLUMN_WIDTH))
+                .width(Length::Fixed(column_width))
                 .height(Length::Fill);
         // Outlined while that menu is open
         if self.column_context_folder() == Some(&listing.path) {
@@ -4915,7 +5015,8 @@ impl Tab {
         let cosmic_theme::Spacing {
             space_xxs, space_s, ..
         } = theme::spacing();
-        let width = COLUMN_WIDTH - 2.0 * f32::from(column_padding());
+        let column_width = self.column_width(&ColumnKey::FilePreview);
+        let width = column_width - 2.0 * f32::from(column_padding());
 
         let preview: Element<_> = match &item.thumbnail_opt {
             Some(ItemThumbnail::Image(handle, _)) => widget::image(handle.clone())
@@ -5001,7 +5102,7 @@ impl Tab {
             .width(Length::Fill)
             .height(Length::Fill);
         widget::container(content)
-            .width(Length::Fixed(COLUMN_WIDTH))
+            .width(Length::Fixed(column_width))
             .height(Length::Fill)
             .into()
     }
@@ -5027,11 +5128,13 @@ impl Tab {
                     self.columns.selected_child(i),
                     i == 0,
                 ))
-                .push(column_divider());
+                .push(self.column_resize_handle(ColumnKey::Folder(listing.path.clone())));
         }
 
+        let active_key = ColumnKey::Folder(self.location.path_opt().cloned().unwrap_or_default());
+        let active_width = self.column_width(&active_key);
         let (mut drag_list, active, can_scroll) =
-            self.list_view_inner(Some((COLUMN_WIDTH, self.columns.ancestors.is_empty())));
+            self.list_view_inner(Some((active_width, self.columns.ancestors.is_empty())));
         if let Some(PendingPress::Column(target, i)) = self.pending_press
             && let Some(item) = self
                 .columns
@@ -5059,7 +5162,7 @@ impl Tab {
             active
         };
         let mut active = widget::container(active)
-            .width(Length::Fixed(COLUMN_WIDTH))
+            .width(Length::Fixed(active_width))
             .height(Length::Fill);
         // Outlined while the menu for its empty space is open
         if self.column_context_folder().is_some()
@@ -5069,22 +5172,41 @@ impl Tab {
         }
         row = row.push(active);
 
+        // Each divider resizes the column before it; as in Finder, the last column ends with
+        // one too
+        let mut last_key = active_key;
         if let Some(preview) = &self.columns.preview {
-            row = row.push(column_divider()).push(self.column_listing_view(
-                preview,
-                ColumnTarget::Preview,
-                None,
-                false,
-            ));
+            row = row
+                .push(self.column_resize_handle(last_key))
+                .push(self.column_listing_view(preview, ColumnTarget::Preview, None, false));
+            last_key = ColumnKey::Folder(preview.path.clone());
         } else if let Some(item) = self.single_selected_file() {
             row = row
-                .push(column_divider())
+                .push(self.column_resize_handle(last_key))
                 .push(self.file_preview_view(item));
+            last_key = ColumnKey::FilePreview;
         }
-        // As in Finder, the last column ends with a divider too
-        row = row.push(column_divider());
+        row = row.push(self.column_resize_handle(last_key));
 
-        let view = widget::scrollable::horizontal(row.height(Length::Fill))
+        // While resizing, a layer over the columns follows the pointer anywhere over them
+        let row: Element<_> = if self.column_resize.is_some() {
+            stack![
+                row.height(Length::Fill),
+                cosmic::iced::widget::mouse_area(
+                    widget::container(space::horizontal())
+                        .width(Length::Fill)
+                        .height(Length::Fill),
+                )
+                .interaction(cosmic::iced::mouse::Interaction::ResizingHorizontally)
+                .on_move(|point| Message::ColumnResizeMove(point.x))
+                .on_release(Message::ColumnResizeEnd),
+            ]
+            .into()
+        } else {
+            row.height(Length::Fill).into()
+        };
+
+        let view = widget::scrollable::horizontal(row)
             .id(self.columns_scroll_id.clone())
             .width(Length::Fill)
             .height(Length::Fill);
@@ -7360,6 +7482,45 @@ mod tests {
             "a folder shows its contents"
         );
         assert!(tab.columns.preview.is_some());
+
+        Ok(())
+    }
+
+    #[test]
+    fn columns_dragging_a_divider_resizes_its_column() -> io::Result<()> {
+        use super::{COLUMN_HANDLE_WIDTH, ColumnKey, MIN_COLUMN_WIDTH};
+        let (fs, mut tab) = columns_fixture()?;
+        let dir = subdirs(fs.path())?[0].clone();
+        columns_select(&mut tab, vec![dir.clone()]);
+        let root = ColumnKey::Folder(fs.path().to_path_buf());
+        let preview = ColumnKey::Folder(dir);
+
+        // The divider follows the pointer
+        tab.update(Message::ColumnResizeStart(root.clone()), Modifiers::empty());
+        tab.update(Message::ColumnResizeMove(300.0), Modifiers::empty());
+        tab.update(Message::ColumnResizeEnd, Modifiers::empty());
+        let root_width = 300.0 - COLUMN_HANDLE_WIDTH / 2.0;
+        assert_eq!(tab.column_width(&root), root_width);
+
+        // The next column starts after it, and has a minimum width
+        tab.update(
+            Message::ColumnResizeStart(preview.clone()),
+            Modifiers::empty(),
+        );
+        assert_eq!(
+            tab.column_left(&preview),
+            Some(root_width + COLUMN_HANDLE_WIDTH)
+        );
+        tab.update(
+            Message::ColumnResizeMove(root_width + 10.0),
+            Modifiers::empty(),
+        );
+        tab.update(Message::ColumnResizeEnd, Modifiers::empty());
+        assert_eq!(tab.column_width(&preview), MIN_COLUMN_WIDTH);
+
+        // Moves after the drag ends change nothing
+        tab.update(Message::ColumnResizeMove(900.0), Modifiers::empty());
+        assert_eq!(tab.column_width(&root), root_width);
 
         Ok(())
     }
