@@ -87,6 +87,9 @@ pub(crate) static SORT_OPTION_FALLBACK: LazyLock<FxHashMap<String, (HeadingOptio
         }))
     });
 
+/// Gap between rows in a column, as the list view's dividers leave
+const COLUMN_ROW_GAP: f32 = 1.0;
+
 /// Gap between a column's rows and its edges, the same on both axes
 fn column_padding() -> u16 {
     theme::spacing().space_xxs
@@ -4290,10 +4293,15 @@ impl Tab {
                     continue;
                 }
 
-                // Columns have no dividers, matching the other columns
-                if count > 0 && !columns_mode {
-                    column = column
-                        .push(widget::container(rule::horizontal(1)).padding([0, rule_padding]));
+                if count > 0 {
+                    if columns_mode {
+                        // The list view's gap between rows, without its divider
+                        column = column.push(space::vertical().height(COLUMN_ROW_GAP));
+                    } else {
+                        column = column.push(
+                            widget::container(rule::horizontal(1)).padding([0, rule_padding]),
+                        );
+                    }
                     y += 1.0;
                 }
 
@@ -4691,7 +4699,8 @@ impl Tab {
         let icon_size = self.config.icon_sizes.list();
         let row_height = icon_size + 2 * space_xxs;
 
-        let mut column = widget::column::with_capacity(listing.items.as_ref().map_or(0, Vec::len));
+        let mut column = widget::column::with_capacity(listing.items.as_ref().map_or(0, Vec::len))
+            .spacing(COLUMN_ROW_GAP);
         //TODO: only build visible rows, as the list view does
         for (i, item) in listing
             .items
