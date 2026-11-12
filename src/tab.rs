@@ -5045,6 +5045,8 @@ impl Tab {
                 .push(column_divider())
                 .push(self.file_preview_view(item));
         }
+        // As in Finder, the last column ends with a divider too
+        row = row.push(column_divider());
 
         let view = widget::scrollable::horizontal(row.height(Length::Fill))
             .id(self.columns_scroll_id.clone())
