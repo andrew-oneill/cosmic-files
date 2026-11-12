@@ -2734,6 +2734,25 @@ impl Tab {
                     self.search_context = None;
                 }
             }
+            Message::SelectAll if self.column_context_folder().is_some() => {
+                // From another column's menu: that column becomes active with all of it selected
+                if let Some(folder) = self.column_context_folder().cloned() {
+                    let paths = self
+                        .columns
+                        .listings()
+                        .find(|listing| listing.path == folder)
+                        .and_then(|listing| listing.items.as_ref())
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter(|item| self.config.show_hidden || !item.hidden)
+                                .filter_map(|item| item.path_opt().cloned())
+                                .collect()
+                        });
+                    cd = Some(Location::Path(folder));
+                    cd_select = paths;
+                }
+            }
             Message::SelectAll => {
                 self.select_all();
                 if self.select_focus.take().is_some() {
@@ -6917,6 +6936,32 @@ mod tests {
         tab.update(Message::ContextMenuClosed, Modifiers::empty());
         assert_eq!(tab.context_folder(), Some(&fs.path().to_path_buf()));
         assert_eq!(selected_paths(&tab), vec![dir]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn columns_select_all_from_column_space_selects_that_folder() -> io::Result<()> {
+        let (fs, mut tab) = columns_fixture()?;
+        let dir = subdirs(fs.path())?[0].clone();
+        let commands = columns_select(&mut tab, vec![dir.clone()]);
+        columns_run_scans(&mut tab, &commands);
+
+        tab.update(
+            Message::ColumnBackgroundRightClick(ColumnTarget::Preview),
+            Modifiers::empty(),
+        );
+        tab.update(Message::SelectAll, Modifiers::empty());
+
+        assert_eq_tab_path(&tab, &dir);
+        let mut expected: Vec<_> = read_dir_sorted(&dir)?
+            .into_iter()
+            .filter(|path| !is_hidden(path))
+            .collect();
+        expected.sort();
+        let mut selected = selected_paths(&tab);
+        selected.sort();
+        assert_eq!(selected, expected);
 
         Ok(())
     }
