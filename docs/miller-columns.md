@@ -4,6 +4,30 @@ A third view mode, **Columns** (`View::Columns`, Ctrl+3), showing a folder's anc
 selected folder's contents side by side, as in macOS Finder's column view. This fork does not
 upstream it: pop-os/cosmic-files does not accept LLM-generated changes.
 
+## Building this fork
+
+On a Debian-based system (Pop!_OS, Ubuntu):
+
+```sh
+sudo apt install git curl build-essential pkgconf libclang-dev libglib2.0-dev libxkbcommon-dev
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # Rust; rust-toolchain.toml pins the version
+git clone -b miller-columns https://github.com/andrew-oneill/cosmic-files.git
+cd cosmic-files
+cargo build --release
+./target/release/cosmic-files
+```
+
+Running from `target/` leaves any installed cosmic-files untouched. Switch to the columns view
+with Ctrl+3 or View → Columns view. To update, `git pull` and build again.
+
+- **Homebrew:** if Homebrew's `pkg-config` comes first on `PATH`, it cannot find the system
+  libraries and the build fails. Build with `PKG_CONFIG=/usr/bin/pkg-config cargo build --release`.
+- **Installing system-wide:** `sudo apt install just`, then `just build-release` and
+  `sudo just install`. This overwrites the distro's copy in `/usr`, which the next package update
+  restores; `sudo apt install --reinstall cosmic-files` puts it back by hand.
+- **Shared settings:** this build and the stock cosmic-files share their settings. The stock
+  version does not know the columns view and falls back to its default view if it reads it.
+
 ## Design
 
 - **The active column is the tab's ordinary listing.** `Tab::location` and `Tab::items_opt` are

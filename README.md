@@ -1,6 +1,9 @@
 # cosmic-files
 File manager for the COSMIC desktop environment
 
+> **This fork** adds a Miller columns view on the `miller-columns` branch. To build and
+> install it, see [docs/miller-columns.md](docs/miller-columns.md#building-this-fork).
+
 ## Build the project from source
 
 ```sh
