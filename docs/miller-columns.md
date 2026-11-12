@@ -50,7 +50,6 @@ Phase 1 (MVP) is in place. Known gaps, roughly in priority order:
 - The `view-column-symbolic` icon may be missing from some icon themes.
 - Right-clicking in another column opens the menu at the click point, though the columns
   may have scrolled under it.
-- A column partly scrolled out on the left draws into the tab's left padding.
 - The active column is not wrapped in an `id_container` like the list view: its position moves,
   and libcosmic panics ("Downcast on stateless state") when grafted state no longer matches.
 

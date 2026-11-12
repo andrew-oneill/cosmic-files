@@ -3959,6 +3959,12 @@ impl Tab {
         let size = self.size_opt.get().unwrap_or_else(|| Size::new(0.0, 0.0));
         let columns_mode = column_width.is_some();
         let size = column_width.map_or(size, |width| Size::new(width, size.height));
+        // Columns sit side by side, so keep their rows close to the dividers
+        let side_padding = if columns_mode {
+            theme::spacing().space_xxxs
+        } else {
+            space_s
+        };
         //TODO: allow resizing?
         let name_width = 300.0;
         let modified_width = 200.0;
@@ -4015,8 +4021,11 @@ impl Tab {
 
                 item.state.pos_opt.set(Some((count, 0)));
                 let item_rect = Rectangle::new(
-                    Point::new(f32::from(space_s), y),
-                    Size::new(size.width - f32::from(2 * space_s), f32::from(row_height)),
+                    Point::new(f32::from(side_padding), y),
+                    Size::new(
+                        size.width - f32::from(2 * side_padding),
+                        f32::from(row_height),
+                    ),
                 );
                 item.state.rect_opt.set(Some(item_rect));
 
@@ -4336,7 +4345,7 @@ impl Tab {
         let drag_col = (!drag_items.is_empty())
             .then(|| Element::from(widget::column::with_children(drag_items)));
 
-        let mouse_area = mouse_area::MouseArea::new(column.padding([0, space_s]))
+        let mouse_area = mouse_area::MouseArea::new(column.padding([0, side_padding]))
             .with_id(Id::new("list-view"))
             .on_press(|_| Message::Click(None))
             .on_auto_scroll(Message::AutoScroll)
@@ -4385,7 +4394,9 @@ impl Tab {
         selected: Option<&Path>,
     ) -> Element<'a, Message> {
         let cosmic_theme::Spacing {
-            space_s, space_xxs, ..
+            space_xxxs,
+            space_xxs,
+            ..
         } = theme::spacing();
         let icon_size = self.config.icon_sizes.list();
         let row_height = icon_size + 2 * space_xxs;
@@ -4428,13 +4439,14 @@ impl Tab {
             column = column.push(row);
         }
 
-        let content = widget::scrollable(column.padding([0, space_s]))
+        let content = widget::scrollable(column.padding([0, space_xxxs]))
             .id(listing.scrollable_id.clone())
             .width(Length::Fill)
             .height(Length::Fill);
         widget::container(self.dnd_dest(&Location::Path(listing.path.clone()), content))
             .width(Length::Fixed(COLUMN_WIDTH))
             .height(Length::Fill)
+            .padding([space_xxs, 0])
             .into()
     }
 
@@ -4477,7 +4489,8 @@ impl Tab {
         row = row.push(
             widget::container(active)
                 .width(Length::Fixed(COLUMN_WIDTH))
-                .height(Length::Fill),
+                .height(Length::Fill)
+                .padding([theme::spacing().space_xxs, 0]),
         );
 
         if let Some(preview) = &self.columns.preview {
@@ -4492,6 +4505,14 @@ impl Tab {
             .id(self.columns_scroll_id.clone())
             .width(Length::Fill)
             .height(Length::Fill);
+        // Outside the scrollable, so columns scrolled out are clipped at the location bar's
+        // edges, and rows (inset by space_xxxs) line up with it
+        let cosmic_theme::Spacing {
+            space_xxxs,
+            space_s,
+            ..
+        } = theme::spacing();
+        let view = widget::container(view).padding([0, space_s - space_xxxs]);
         (drag_list, view.into(), false)
     }
 
