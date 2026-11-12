@@ -111,6 +111,7 @@ sudo apt install --reinstall cosmic-files
 | Up / Down | Move within the active column |
 | Right | Into the selected folder, selecting its first item |
 | Left | To the parent column, selecting the folder left |
+| Click empty space in another column | Make that column active with nothing selected in it |
 | Click in another column | Make that column active with the item selected |
 | Double-click a file in another column | Open it |
 | Drag an unselected item | Drag just that item; the selection and columns stay as they are |

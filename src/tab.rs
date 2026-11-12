@@ -453,6 +453,8 @@ pub enum Message {
     ColumnRightClick(ColumnTarget, usize),
     /// Right-click on a non-active column's empty space: the context menu acts on its folder
     ColumnBackgroundRightClick(ColumnTarget),
+    /// Click on a non-active column's empty space: that column becomes active, nothing selected
+    ColumnBackgroundClick(ColumnTarget),
     /// Mouse released on an item in a non-active column
     ColumnClickRelease(ColumnTarget, usize),
     /// A drag of items out of this tab began
@@ -1767,6 +1769,13 @@ impl Tab {
                         .target(target)
                         .map(|listing| ColumnContext::Folder(listing.path.clone()));
                     self.set_context(context);
+                }
+            }
+            Message::ColumnBackgroundClick(target) => {
+                if let Some(path) = self.columns.target(target).map(|l| l.path.clone()) {
+                    self.clear_context();
+                    cd = Some(Location::Path(path));
+                    cd_select = Some(Vec::new());
                 }
             }
             Message::ColumnActivate(path) => {
@@ -4886,6 +4895,7 @@ impl Tab {
         .height(Length::Fill);
         // Right-clicking empty space opens the menu for this column's folder
         let content = mouse_area::MouseArea::new(content)
+            .on_press(move |_| Message::ColumnBackgroundClick(target))
             .on_right_press_no_capture()
             .on_right_press(move |_| Message::ColumnBackgroundRightClick(target));
         let mut container =
@@ -7268,6 +7278,34 @@ mod tests {
 
         assert_eq!(tab.column_context_folder(), Some(&dir));
         assert_eq!(selected_paths(&tab), vec![dir]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn columns_click_column_space_makes_it_active_with_nothing_selected() -> io::Result<()> {
+        let (fs, mut tab) = columns_fixture()?;
+        let dir = subdirs(fs.path())?[0].clone();
+        let commands = columns_select(&mut tab, vec![dir.clone()]);
+        columns_run_scans(&mut tab, &commands);
+
+        // The column after the selected folder: into that folder
+        tab.update(
+            Message::ColumnBackgroundClick(ColumnTarget::Preview),
+            Modifiers::empty(),
+        );
+        assert_eq_tab_path(&tab, &dir);
+        assert!(selected_paths(&tab).is_empty());
+        assert_eq!(tab.columns.selected_child(0), Some(dir.as_path()));
+
+        // An earlier column: back to it, nothing selected, later columns gone
+        tab.update(
+            Message::ColumnBackgroundClick(ColumnTarget::Ancestor(0)),
+            Modifiers::empty(),
+        );
+        assert_eq_tab_path(&tab, fs.path());
+        assert!(selected_paths(&tab).is_empty());
+        assert!(tab.columns.preview.is_none());
 
         Ok(())
     }
