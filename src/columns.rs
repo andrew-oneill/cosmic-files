@@ -17,9 +17,6 @@ use crate::item::Item;
 /// Width of each column, in logical pixels
 pub const COLUMN_WIDTH: f32 = 260.0;
 
-/// Width of the file preview column: a full thumbnail and its padding
-pub const PREVIEW_COLUMN_WIDTH: f32 = 340.0;
-
 /// One folder's listing shown as a column other than the active one
 pub struct ColumnListing {
     pub path: PathBuf,

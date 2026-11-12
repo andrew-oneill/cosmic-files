@@ -43,9 +43,7 @@ use walkdir::WalkDir;
 
 use crate::app::{Action, PreviewItem, PreviewKind};
 use crate::clipboard::{ClipboardCopy, ClipboardKind, ClipboardPaste};
-use crate::columns::{
-    COLUMN_WIDTH, ColumnListing, ColumnTarget, ColumnsState, PREVIEW_COLUMN_WIDTH,
-};
+use crate::columns::{COLUMN_WIDTH, ColumnListing, ColumnTarget, ColumnsState};
 use crate::config::{
     ContextActionPreset, ICON_SCALE_MAX, ICON_SIZE_GRID, IconSizes, TabConfig, ThumbCfg,
 };
@@ -112,6 +110,16 @@ fn outlined<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message
             .style(context_outline),
     ]
     .into()
+}
+
+/// Secondary text, such as labels in the file preview column
+fn muted_text(theme: &theme::Theme) -> cosmic::iced::widget::text::Style {
+    let mut color = Color::from(theme.cosmic().on_bg_color());
+    color.a *= 0.6;
+    cosmic::iced::widget::text::Style {
+        color: Some(color),
+        ..Default::default()
+    }
 }
 
 /// Gap between rows in a column, as the list view's dividers leave
@@ -4865,6 +4873,103 @@ impl Tab {
         container.into()
     }
 
+    /// The last column for a single selected file, laid out as Finder's: the preview, the
+    /// name with its kind and size, then information as label and value rows
+    fn file_preview_view<'a>(&'a self, item: &'a Item) -> Element<'a, Message> {
+        let cosmic_theme::Spacing {
+            space_xxs, space_s, ..
+        } = theme::spacing();
+        let width = COLUMN_WIDTH - 2.0 * f32::from(column_padding());
+
+        let preview: Element<_> = match &item.thumbnail_opt {
+            Some(ItemThumbnail::Image(handle, _)) => widget::image(handle.clone())
+                .width(Length::Fill)
+                .content_fit(ContentFit::Contain)
+                .into(),
+            Some(ItemThumbnail::Svg(handle)) => widget::svg(handle.clone())
+                .width(Length::Fill)
+                .content_fit(ContentFit::Contain)
+                .into(),
+            Some(ItemThumbnail::Text(content)) => widget::text_editor::text_editor(content)
+                .style(text_editor_class)
+                .height(Length::Fixed(width))
+                .padding(space_xxs)
+                .into(),
+            _ => widget::icon::icon(item.icon_handle_grid.clone())
+                .content_fit(ContentFit::Contain)
+                .size(128)
+                .into(),
+        };
+
+        let metadata = item.file_metadata();
+        let mut summary = item.mime.to_string();
+        if let Some(metadata) = &metadata {
+            summary = format!("{summary} – {}", format_size(metadata.len()));
+        }
+
+        let mut column = widget::column::with_capacity(8)
+            .spacing(space_xxs)
+            .align_x(Alignment::Center)
+            .push(
+                widget::container(preview)
+                    .center_x(Length::Fill)
+                    .max_height(width),
+            )
+            .push(space::vertical().height(space_xxs))
+            .push(
+                widget::text::heading(item.display_name.clone())
+                    .width(Length::Fill)
+                    .align_x(Alignment::Center),
+            )
+            .push(
+                widget::text::caption(summary)
+                    .width(Length::Fill)
+                    .align_x(Alignment::Center)
+                    .class(theme::Text::Custom(muted_text)),
+            );
+
+        // Information: label on the left, value on the right
+        let mut rows = Vec::new();
+        if let Some(metadata) = &metadata {
+            for (label, time) in [
+                (fl!("date-created"), metadata.created()),
+                (fl!("modified"), metadata.modified()),
+                (fl!("date-accessed"), metadata.accessed()),
+            ] {
+                if let Ok(time) = time {
+                    rows.push((label, self.format_time(time).to_string()));
+                }
+            }
+        }
+        if let Some(path) = item.path_opt()
+            && let Ok((w, h)) = image::image_dimensions(path)
+        {
+            rows.push((fl!("dimensions"), format!("{w} × {h}")));
+        }
+        if !rows.is_empty() {
+            column = column
+                .push(space::vertical().height(space_s))
+                .push(widget::text::heading(fl!("information")).width(Length::Fill));
+            for (label, value) in rows {
+                column = column.push(
+                    widget::row::with_capacity(3)
+                        .spacing(space_xxs)
+                        .push(widget::text::caption(label).class(theme::Text::Custom(muted_text)))
+                        .push(space::horizontal())
+                        .push(widget::text::caption(value)),
+                );
+            }
+        }
+
+        let content = column_scrollable(widget::container(column).padding(column_padding()))
+            .width(Length::Fill)
+            .height(Length::Fill);
+        widget::container(content)
+            .width(Length::Fixed(COLUMN_WIDTH))
+            .height(Length::Fill)
+            .into()
+    }
+
     /// Miller columns: ancestors, the active folder, and the selected folder's contents
     pub fn columns_view(
         &self,
@@ -4936,19 +5041,9 @@ impl Tab {
                 false,
             ));
         } else if let Some(item) = self.single_selected_file() {
-            // As in Finder, a single selected file is previewed in a last column
-            let padding = column_padding();
-            let preview = column_scrollable(
-                widget::container(item.preview_summary_view(self.config.military_time))
-                    .padding(padding),
-            )
-            .width(Length::Fill)
-            .height(Length::Fill);
-            row = row.push(column_divider()).push(
-                widget::container(preview)
-                    .width(Length::Fixed(PREVIEW_COLUMN_WIDTH))
-                    .height(Length::Fill),
-            );
+            row = row
+                .push(column_divider())
+                .push(self.file_preview_view(item));
         }
 
         let view = widget::scrollable::horizontal(row.height(Length::Fill))

@@ -74,8 +74,9 @@ sudo apt install --reinstall cosmic-files
 - **Other columns live in `Tab::columns`** (`src/columns.rs`, `ColumnsState`):
   - `ancestors`: folders from `root` down to the parent of the active folder;
   - `preview`: contents of the single selected folder (none for files or multi-select).
-  - A single selected file is previewed in a last, wider column instead
-    (`Item::preview_summary_view`: the details pane without its settings).
+  - A single selected file is previewed in a last column instead, laid out as Finder's
+    (`Tab::file_preview_view`): the preview, the name with type and size, then information
+    rows. The type is the MIME type; Finder's "PNG image" style kind is not available yet.
 - **Root.** A folder chosen in the sidebar (or a drive mounted from it) always becomes the root,
   the leftmost column, as in Finder. Otherwise the root is kept while the active folder stays
   inside it; a jump elsewhere (breadcrumb, sibling) makes the new folder the root, and moving left
