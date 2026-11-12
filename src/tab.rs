@@ -112,20 +112,9 @@ fn column_side_padding(leftmost: bool) -> (u16, u16) {
     (if leftmost { 0 } else { padding }, padding)
 }
 
-/// Divider between columns: the theme's divider colour at half strength
+/// Divider between columns, in the theme's divider colour
 fn column_divider<'a>() -> Element<'a, Message> {
-    rule::vertical(1)
-        .class(theme::Rule::custom(|theme| {
-            let mut color = Color::from(theme.current_container().divider);
-            color.a *= 0.5;
-            rule::Style {
-                color,
-                radius: 0.0.into(),
-                fill_mode: rule::FillMode::Full,
-                snap: true,
-            }
-        }))
-        .into()
+    rule::vertical(1).into()
 }
 
 fn button_appearance(
