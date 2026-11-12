@@ -87,6 +87,19 @@ pub(crate) static SORT_OPTION_FALLBACK: LazyLock<FxHashMap<String, (HeadingOptio
         }))
     });
 
+/// Outline of what a context menu opened in the columns view acts on, while it is open
+fn context_outline(theme: &theme::Theme) -> widget::container::Style {
+    let cosmic = theme.cosmic();
+    widget::container::Style {
+        border: Border {
+            color: cosmic.accent_color().into(),
+            width: 2.0,
+            radius: cosmic.radius_xs().into(),
+        },
+        ..Default::default()
+    }
+}
+
 /// Gap between rows in a column, as the list view's dividers leave
 const COLUMN_ROW_GAP: f32 = 1.0;
 
@@ -4736,19 +4749,7 @@ impl Tab {
             let button: Element<_> = if self.column_context_item_path().is_some()
                 && self.column_context_item_path() == item.path_opt()
             {
-                widget::container(button)
-                    .style(|theme| {
-                        let cosmic = theme.cosmic();
-                        widget::container::Style {
-                            border: Border {
-                                color: cosmic.accent_color().into(),
-                                width: 2.0,
-                                radius: cosmic.radius_xs().into(),
-                            },
-                            ..Default::default()
-                        }
-                    })
-                    .into()
+                widget::container(button).style(context_outline).into()
             } else {
                 button.into()
             };
@@ -4781,17 +4782,7 @@ impl Tab {
                 .height(Length::Fill);
         // Outlined while that menu is open
         if self.column_context_folder() == Some(&listing.path) {
-            container = container.style(|theme| {
-                let cosmic = theme.cosmic();
-                widget::container::Style {
-                    border: Border {
-                        color: cosmic.accent_color().into(),
-                        width: 2.0,
-                        radius: cosmic.radius_xs().into(),
-                    },
-                    ..Default::default()
-                }
-            });
+            container = container.style(context_outline);
         }
         container.into()
     }
