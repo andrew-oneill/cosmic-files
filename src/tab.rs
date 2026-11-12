@@ -87,6 +87,27 @@ pub(crate) static SORT_OPTION_FALLBACK: LazyLock<FxHashMap<String, (HeadingOptio
         }))
     });
 
+/// Gap between a column's rows and its edges, the same on both axes
+fn column_padding() -> u16 {
+    theme::spacing().space_xxs
+}
+
+/// Divider between columns: the theme's divider colour at half strength
+fn column_divider<'a>() -> Element<'a, Message> {
+    rule::vertical(1)
+        .class(theme::Rule::custom(|theme| {
+            let mut color = Color::from(theme.current_container().divider);
+            color.a *= 0.5;
+            rule::Style {
+                color,
+                radius: 0.0.into(),
+                fill_mode: rule::FillMode::Full,
+                snap: true,
+            }
+        }))
+        .into()
+}
+
 fn button_appearance(
     theme: &theme::Theme,
     selected: bool,
@@ -3959,9 +3980,8 @@ impl Tab {
         let size = self.size_opt.get().unwrap_or_else(|| Size::new(0.0, 0.0));
         let columns_mode = column_width.is_some();
         let size = column_width.map_or(size, |width| Size::new(width, size.height));
-        // Columns sit side by side, so keep their rows close to the dividers
         let side_padding = if columns_mode {
-            theme::spacing().space_xxxs
+            column_padding()
         } else {
             space_s
         };
@@ -4393,11 +4413,8 @@ impl Tab {
         target: ColumnTarget,
         selected: Option<&Path>,
     ) -> Element<'a, Message> {
-        let cosmic_theme::Spacing {
-            space_xxxs,
-            space_xxs,
-            ..
-        } = theme::spacing();
+        let space_xxs = theme::spacing().space_xxs;
+        let padding = column_padding();
         let icon_size = self.config.icon_sizes.list();
         let row_height = icon_size + 2 * space_xxs;
 
@@ -4439,14 +4456,14 @@ impl Tab {
             column = column.push(row);
         }
 
-        let content = widget::scrollable(column.padding([0, space_xxxs]))
+        let content = widget::scrollable(column.padding([0, padding]))
             .id(listing.scrollable_id.clone())
             .width(Length::Fill)
             .height(Length::Fill);
         widget::container(self.dnd_dest(&Location::Path(listing.path.clone()), content))
             .width(Length::Fixed(COLUMN_WIDTH))
             .height(Length::Fill)
-            .padding([space_xxs, 0])
+            .padding([padding, 0])
             .into()
     }
 
@@ -4470,7 +4487,7 @@ impl Tab {
                     ColumnTarget::Ancestor(i),
                     self.columns.selected_child(i),
                 ))
-                .push(rule::vertical(1));
+                .push(column_divider());
         }
 
         let (drag_list, active, can_scroll) = self.list_view_inner(Some(COLUMN_WIDTH));
@@ -4490,11 +4507,11 @@ impl Tab {
             widget::container(active)
                 .width(Length::Fixed(COLUMN_WIDTH))
                 .height(Length::Fill)
-                .padding([theme::spacing().space_xxs, 0]),
+                .padding([column_padding(), 0]),
         );
 
         if let Some(preview) = &self.columns.preview {
-            row = row.push(rule::vertical(1)).push(self.column_listing_view(
+            row = row.push(column_divider()).push(self.column_listing_view(
                 preview,
                 ColumnTarget::Preview,
                 None,
@@ -4506,13 +4523,9 @@ impl Tab {
             .width(Length::Fill)
             .height(Length::Fill);
         // Outside the scrollable, so columns scrolled out are clipped at the location bar's
-        // edges, and rows (inset by space_xxxs) line up with it
-        let cosmic_theme::Spacing {
-            space_xxxs,
-            space_s,
-            ..
-        } = theme::spacing();
-        let view = widget::container(view).padding([0, space_s - space_xxxs]);
+        // edges, and rows (inset by column_padding) line up with it
+        let space_s = theme::spacing().space_s;
+        let view = widget::container(view).padding([0, space_s.saturating_sub(column_padding())]);
         (drag_list, view.into(), false)
     }
 
