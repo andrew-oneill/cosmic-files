@@ -1068,6 +1068,8 @@ impl Tab {
         cosmic::iced::widget::mouse_area(handle)
             .interaction(cosmic::iced::mouse::Interaction::ResizingHorizontally)
             .on_press(Message::ColumnResizeStart(key))
+            // A click can be released before the resize overlay exists to hear it
+            .on_release(Message::ColumnResizeEnd)
             .into()
     }
 
@@ -5197,7 +5199,9 @@ impl Tab {
                 )
                 .interaction(cosmic::iced::mouse::Interaction::ResizingHorizontally)
                 .on_move(|point| Message::ColumnResizeMove(point.x))
-                .on_release(Message::ColumnResizeEnd),
+                .on_release(Message::ColumnResizeEnd)
+                // A press means the release was missed somehow
+                .on_press(Message::ColumnResizeEnd),
             ]
             .into()
         } else {
@@ -6187,6 +6191,22 @@ impl Tab {
                             std::future::pending().await
                         },
                     )
+                },
+            ));
+        }
+
+        // A column resize ends with the button's release anywhere, which the columns themselves
+        // miss when it is outside them
+        if self.column_resize.is_some() {
+            subscriptions.push(cosmic::iced::event::listen_with(
+                |event, _status, _window| {
+                    matches!(
+                        event,
+                        cosmic::iced::Event::Mouse(cosmic::iced::mouse::Event::ButtonReleased(
+                            cosmic::iced::mouse::Button::Left
+                        ))
+                    )
+                    .then_some(Message::ColumnResizeEnd)
                 },
             ));
         }
