@@ -608,21 +608,6 @@ impl Item {
         mime_app_cache_opt: Option<&'a mime_app::MimeAppCache>,
         military_time: bool,
     ) -> Element<'a, Message> {
-        self.preview_view_with(mime_app_cache_opt, military_time, true)
-    }
-
-    /// The preview and details without the settings (open with, permissions, checksum) or
-    /// the open button, as for the columns view's file preview
-    pub fn preview_summary_view(&self, military_time: bool) -> Element<'_, Message> {
-        self.preview_view_with(None, military_time, false)
-    }
-
-    fn preview_view_with<'a>(
-        &'a self,
-        mime_app_cache_opt: Option<&'a mime_app::MimeAppCache>,
-        military_time: bool,
-        with_settings: bool,
-    ) -> Element<'a, Message> {
         let cosmic_theme::Spacing {
             space_xxxs,
             space_m,
@@ -716,7 +701,7 @@ impl Item {
             }
 
             #[cfg(unix)]
-            if with_settings && let Some(path) = self.path_opt() {
+            if let Some(path) = self.path_opt() {
                 use std::os::unix::fs::MetadataExt;
 
                 let mode = metadata.mode();
@@ -791,8 +776,7 @@ impl Item {
         }
         column = column.push(details);
 
-        if with_settings
-            && let Some(metadata) = self.file_metadata()
+        if let Some(metadata) = self.file_metadata()
             && !metadata.is_dir()
             && let Some(path) = self.path_opt()
         {
@@ -841,8 +825,7 @@ impl Item {
             );
         }
 
-        if with_settings
-            && let Some(path) = self.path_opt()
+        if let Some(path) = self.path_opt()
             && self.state.selected
         {
             column = column.push(
