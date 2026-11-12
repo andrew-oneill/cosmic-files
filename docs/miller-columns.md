@@ -47,6 +47,19 @@ just build-release
 sudo just install
 ```
 
+Installing copies the build into `/usr`, so a new build is not used until it is installed
+again. To update an installed copy:
+
+```sh
+git pull
+just build-release
+sudo just install
+```
+
+Use `just build-release` rather than `cargo build --release` here: it also builds the
+thumbnailer and applet that `just install` copies. If a package update restores the stock
+version, `sudo just install` puts this build back without rebuilding.
+
 To go back to the stock version:
 
 ```sh
