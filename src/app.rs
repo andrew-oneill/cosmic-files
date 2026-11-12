@@ -3638,7 +3638,7 @@ impl Application for App {
             Message::NewItem(entity_opt, dir) => {
                 let entity = entity_opt.unwrap_or_else(|| self.tab_model.active());
                 if let Some(tab) = self.tab_model.data_mut::<Tab>(entity)
-                    && let Some(path) = tab.location.path_opt()
+                    && let Some(path) = tab.context_folder()
                 {
                     return Task::batch([
                         self.dialog_pages.push_back(DialogPage::NewItem {
@@ -3757,7 +3757,7 @@ impl Application for App {
                     let mut paths = Box::from([]);
                     let entity = entity_opt.unwrap_or_else(|| self.tab_model.active());
                     if let Some(tab) = self.tab_model.data_mut::<Tab>(entity)
-                        && let Some(path) = tab.location.path_opt()
+                        && let Some(path) = tab.context_folder()
                     {
                         paths = tab
                             .selected_items()
@@ -3895,7 +3895,7 @@ impl Application for App {
             Message::Paste(entity_opt) => {
                 let entity = entity_opt.unwrap_or_else(|| self.tab_model.active());
                 if let Some(tab) = self.tab_model.data_mut::<Tab>(entity)
-                    && let Some(path) = tab.location.path_opt()
+                    && let Some(path) = tab.context_folder()
                 {
                     let to = path.clone();
 

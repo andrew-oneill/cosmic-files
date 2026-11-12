@@ -112,9 +112,20 @@ fn column_side_padding(leftmost: bool) -> (u16, u16) {
     (if leftmost { 0 } else { padding }, padding)
 }
 
-/// Divider between columns, in the theme's divider colour
+/// Divider between columns: the theme's divider colour at three-quarter strength
 fn column_divider<'a>() -> Element<'a, Message> {
-    rule::vertical(1).into()
+    rule::vertical(1)
+        .class(theme::Rule::custom(|theme| {
+            let mut color = Color::from(theme.current_container().divider);
+            color.a *= 0.75;
+            rule::Style {
+                color,
+                radius: 0.0.into(),
+                fill_mode: rule::FillMode::Full,
+                snap: true,
+            }
+        }))
+        .into()
 }
 
 fn button_appearance(
@@ -402,6 +413,8 @@ pub enum Message {
     /// Right-click on an item in a non-active column: the context menu acts on it alone,
     /// without changing the selection
     ColumnRightClick(ColumnTarget, usize),
+    /// Right-click on a non-active column's empty space: the context menu acts on its folder
+    ColumnBackgroundRightClick(ColumnTarget),
     /// Mouse released on an item in a non-active column
     ColumnClickRelease(ColumnTarget, usize),
     /// A drag of items out of this tab began
@@ -503,6 +516,15 @@ impl MenuAction for LocationMenuAction {
     fn message(&self) -> Self::Message {
         Message::LocationMenuAction(*self)
     }
+}
+
+/// What a context menu opened from a non-active column acts on
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ColumnContext {
+    /// An item right-clicked in the column
+    Item(PathBuf),
+    /// The column's folder, right-clicked on its empty space
+    Folder(PathBuf),
 }
 
 /// An item pressed in the columns view whose click waits for the mouse release, so dragging it
@@ -629,8 +651,11 @@ pub struct Tab {
     large_image_manager: LargeImageManager,
     pub(crate) columns: ColumnsState,
     columns_scroll_id: widget::Id,
-    /// Item in a non-active column whose context menu is open
-    column_context: Option<PathBuf>,
+    /// What the context menu opened from a non-active column acts on, while it is open
+    column_context: Option<ColumnContext>,
+    /// Set by a right-click on an item in a non-active column, so its column's background
+    /// handler, which hears the same click next, leaves it be
+    column_item_right_clicked: bool,
     pending_press: Option<PendingPress>,
     /// Set while a pending press is applied, so it is not deferred again
     applying_press: bool,
@@ -744,6 +769,7 @@ impl Tab {
             columns: ColumnsState::default(),
             columns_scroll_id: widget::Id::unique(),
             column_context: None,
+            column_item_right_clicked: false,
             pending_press: None,
             applying_press: false,
         }
@@ -787,7 +813,7 @@ impl Tab {
     }
 
     pub fn cut_selected(&mut self) {
-        let context = self.column_context.clone();
+        let context = self.column_context_item_path().cloned();
         if let Some(ref mut items) = self.items_opt {
             for item in items.iter_mut() {
                 item.state.cut = context.is_none() && item.state.selected;
@@ -812,8 +838,11 @@ impl Tab {
     }
 
     /// The items actions apply to: the selection, or while its context menu is open, an item
-    /// right-clicked in another column
+    /// right-clicked in another column (none for a column's empty space)
     pub fn selected_items(&self) -> Box<dyn Iterator<Item = &Item> + '_> {
+        if let Some(ColumnContext::Folder(_)) = self.column_context {
+            return Box::new(std::iter::empty());
+        }
         match self.column_context_item() {
             Some(item) => Box::new(std::iter::once(item)),
             None => Box::new(
@@ -866,7 +895,7 @@ impl Tab {
 
     /// The item right-clicked in another column, while its context menu is open
     fn column_context_item(&self) -> Option<&Item> {
-        let path = self.column_context.as_ref()?;
+        let path = self.column_context_item_path()?;
         self.columns
             .listings()
             .filter_map(|listing| listing.items.as_ref())
@@ -890,7 +919,29 @@ impl Tab {
 
     /// The path right-clicked in another column, while its context menu is open
     pub fn column_context(&self) -> Option<&PathBuf> {
-        self.column_context.as_ref()
+        self.column_context_item_path()
+    }
+
+    fn column_context_item_path(&self) -> Option<&PathBuf> {
+        match &self.column_context {
+            Some(ColumnContext::Item(path)) => Some(path),
+            _ => None,
+        }
+    }
+
+    /// The column folder right-clicked on its empty space, while its context menu is open
+    pub fn column_context_folder(&self) -> Option<&PathBuf> {
+        match &self.column_context {
+            Some(ColumnContext::Folder(path)) => Some(path),
+            _ => None,
+        }
+    }
+
+    /// The folder that new items, pastes and terminals apply to: a right-clicked column's, or
+    /// the tab's own
+    pub fn context_folder(&self) -> Option<&PathBuf> {
+        self.column_context_folder()
+            .or_else(|| self.location.path_opt())
     }
 
     pub fn selected_locations(&self) -> Vec<Location> {
@@ -1616,10 +1667,23 @@ impl Tab {
             Message::ColumnRightClick(target, i) => {
                 // The background's right-click handler must not clear the selection
                 self.last_right_click = Some(i);
+                self.column_item_right_clicked = true;
                 self.column_context = self
                     .columns
                     .target(target)
-                    .and_then(|listing| listing.items.as_ref()?.get(i)?.path_opt().cloned());
+                    .and_then(|listing| listing.items.as_ref()?.get(i)?.path_opt().cloned())
+                    .map(ColumnContext::Item);
+            }
+            Message::ColumnBackgroundRightClick(target) => {
+                // The same click on an item already chose what the menu acts on
+                if !std::mem::take(&mut self.column_item_right_clicked) {
+                    // The tab's background handler must not clear the selection
+                    self.last_right_click = Some(usize::MAX);
+                    self.column_context = self
+                        .columns
+                        .target(target)
+                        .map(|listing| ColumnContext::Folder(listing.path.clone()));
+                }
             }
             Message::ColumnActivate(path) => {
                 if let Some(parent) = path.parent() {
@@ -4641,7 +4705,9 @@ impl Tab {
             .on_right_press_no_capture()
             .on_right_press(move |_| Message::ColumnRightClick(target, i));
             // Outlined, not selected, while its context menu is open
-            let button: Element<_> = if self.column_context.as_ref() == item.path_opt() {
+            let button: Element<_> = if self.column_context_item_path().is_some()
+                && self.column_context_item_path() == item.path_opt()
+            {
                 widget::container(button)
                     .style(|theme| {
                         let cosmic = theme.cosmic();
@@ -4677,10 +4743,29 @@ impl Tab {
         .id(listing.scrollable_id.clone())
         .width(Length::Fill)
         .height(Length::Fill);
-        widget::container(self.dnd_dest(&Location::Path(listing.path.clone()), content))
-            .width(Length::Fixed(COLUMN_WIDTH))
-            .height(Length::Fill)
-            .into()
+        // Right-clicking empty space opens the menu for this column's folder
+        let content = mouse_area::MouseArea::new(content)
+            .on_right_press_no_capture()
+            .on_right_press(move |_| Message::ColumnBackgroundRightClick(target));
+        let mut container =
+            widget::container(self.dnd_dest(&Location::Path(listing.path.clone()), content))
+                .width(Length::Fixed(COLUMN_WIDTH))
+                .height(Length::Fill);
+        // Outlined while that menu is open
+        if self.column_context_folder() == Some(&listing.path) {
+            container = container.style(|theme| {
+                let cosmic = theme.cosmic();
+                widget::container::Style {
+                    border: Border {
+                        color: cosmic.accent_color().into(),
+                        width: 2.0,
+                        radius: cosmic.radius_xs().into(),
+                    },
+                    ..Default::default()
+                }
+            });
+        }
+        container.into()
     }
 
     /// Miller columns: ancestors, the active folder, and the selected folder's contents
@@ -6805,6 +6890,57 @@ mod tests {
         columns_click(&mut tab, ColumnTarget::Ancestor(0), i);
         assert_eq_tab_path(&tab, fs.path());
         assert_eq!(selected_paths(&tab), vec![loose]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn columns_right_click_column_space_targets_its_folder() -> io::Result<()> {
+        let (fs, mut tab) = columns_fixture()?;
+        let dir = subdirs(fs.path())?[0].clone();
+        columns_select(&mut tab, vec![dir.clone()]);
+
+        tab.update(
+            Message::ColumnBackgroundRightClick(ColumnTarget::Preview),
+            Modifiers::empty(),
+        );
+        // As the tab's own background handler hears the same click next
+        tab.update(Message::RightClickBackground, Modifiers::empty());
+
+        // The selection and its preview stay...
+        assert_eq!(selected_paths(&tab), vec![dir.clone()]);
+        assert!(tab.columns.preview.is_some());
+        // ...the menu acts on no items, and new items go in the column's folder
+        assert_eq!(tab.selected_items().count(), 0);
+        assert_eq!(tab.context_folder(), Some(&dir));
+
+        tab.update(Message::ContextMenuClosed, Modifiers::empty());
+        assert_eq!(tab.context_folder(), Some(&fs.path().to_path_buf()));
+        assert_eq!(selected_paths(&tab), vec![dir]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn columns_right_click_item_wins_over_its_column_space() -> io::Result<()> {
+        let (fs, _tab) = columns_fixture()?;
+        let (mut tab, _nested, i) = columns_with_root_file(&fs)?;
+
+        // An item and its column both hear the click, item first
+        tab.update(
+            Message::ColumnRightClick(ColumnTarget::Ancestor(0), i),
+            Modifiers::empty(),
+        );
+        tab.update(
+            Message::ColumnBackgroundRightClick(ColumnTarget::Ancestor(0)),
+            Modifiers::empty(),
+        );
+
+        assert_eq!(
+            tab.selected_locations(),
+            vec![Location::Path(fs.path().join("loose.txt"))]
+        );
+        assert!(tab.column_context_folder().is_none());
 
         Ok(())
     }

@@ -50,6 +50,7 @@ This document provides a regression testing checklist for COSMIC Files. The chec
 - [ ] Clicking an item in an earlier column makes that column active and removes the columns after it.
 - [ ] Double-clicking a file in another column opens it.
 - [ ] Right-clicking an item in another column outlines it without changing the selection; its menu actions (e.g. Rename) apply to it, and closing the menu removes the outline.
+- [ ] Right-clicking empty space in the column showing a selected folder keeps the selection; New folder from that menu creates the folder in that column's folder.
 - [ ] Dragging files onto a folder in any column, or onto a column's background, moves or copies them there.
 - [ ] Dragging an unselected item (in any column) neither selects it nor changes the columns; a plain click still selects it.
 - [ ] Creating, renaming or deleting a file in a folder shown as a non-active column updates that column.

@@ -275,7 +275,8 @@ pub fn context_menu(
                     children.push(menu::Item::Divider);
                 }
 
-                if tab.mode.multiple() {
+                // Not for another column's folder: it would select in the active column
+                if tab.mode.multiple() && tab.column_context_folder().is_none() {
                     children.push(menu_item(fl!("select-all"), Action::SelectAll));
                 }
                 if can_paste {
