@@ -1054,16 +1054,21 @@ impl Tab {
         self.column_width(&ColumnKey::Folder(path.to_path_buf()))
     }
 
-    /// The divider after a column, which resizes that column when dragged
-    fn column_resize_handle<'a>(&self, key: ColumnKey) -> Element<'a, Message> {
-        cosmic::iced::widget::mouse_area(
-            widget::container(column_divider())
-                .center_x(Length::Fixed(COLUMN_HANDLE_WIDTH))
-                .height(Length::Fill),
-        )
-        .interaction(cosmic::iced::mouse::Interaction::ResizingHorizontally)
-        .on_press(Message::ColumnResizeStart(key))
-        .into()
+    /// The divider after a column, which resizes that column when dragged. The last one's line
+    /// is at its right edge, so it ends where the location bar does when the columns fill it.
+    fn column_resize_handle<'a>(&self, key: ColumnKey, last: bool) -> Element<'a, Message> {
+        let handle = widget::container(column_divider())
+            .width(Length::Fixed(COLUMN_HANDLE_WIDTH))
+            .height(Length::Fill);
+        let handle = if last {
+            handle.align_x(Alignment::End)
+        } else {
+            handle.align_x(Alignment::Center)
+        };
+        cosmic::iced::widget::mouse_area(handle)
+            .interaction(cosmic::iced::mouse::Interaction::ResizingHorizontally)
+            .on_press(Message::ColumnResizeStart(key))
+            .into()
     }
 
     /// Set what the context menu about to open acts on (`None`: the selection)
@@ -5123,7 +5128,7 @@ impl Tab {
                     self.columns.selected_child(i),
                     i == 0,
                 ))
-                .push(self.column_resize_handle(ColumnKey::Folder(listing.path.clone())));
+                .push(self.column_resize_handle(ColumnKey::Folder(listing.path.clone()), false));
         }
 
         let active_key = ColumnKey::Folder(self.location.path_opt().cloned().unwrap_or_default());
@@ -5167,16 +5172,16 @@ impl Tab {
         let mut last_key = active_key;
         if let Some(preview) = &self.columns.preview {
             row = row
-                .push(self.column_resize_handle(last_key))
+                .push(self.column_resize_handle(last_key, false))
                 .push(self.column_listing_view(preview, ColumnTarget::Preview, None, false));
             last_key = ColumnKey::Folder(preview.path.clone());
         } else if let Some(item) = self.single_selected_file() {
             row = row
-                .push(self.column_resize_handle(last_key))
+                .push(self.column_resize_handle(last_key, false))
                 .push(self.file_preview_view(item));
             last_key = ColumnKey::FilePreview;
         }
-        row = row.push(self.column_resize_handle(last_key));
+        row = row.push(self.column_resize_handle(last_key, true));
 
         // While resizing, a layer over the columns follows the pointer anywhere over them
         let row: Element<_> = if self.column_resize.is_some() {
