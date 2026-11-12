@@ -87,7 +87,7 @@ pub(crate) static SORT_OPTION_FALLBACK: LazyLock<FxHashMap<String, (HeadingOptio
         }))
     });
 
-/// Outline of what a context menu opened in the columns view acts on, while it is open
+/// Outline of the item a context menu opened in the columns view acts on, while it is open
 fn context_outline(theme: &theme::Theme) -> widget::container::Style {
     let cosmic = theme.cosmic();
     widget::container::Style {
@@ -4998,15 +4998,10 @@ impl Tab {
             .on_press(move |_| Message::ColumnBackgroundClick(target))
             .on_right_press_no_capture()
             .on_right_press(move |_| Message::ColumnBackgroundRightClick(target));
-        let mut container =
-            widget::container(self.dnd_dest(&Location::Path(listing.path.clone()), content))
-                .width(Length::Fixed(column_width))
-                .height(Length::Fill);
-        // Outlined while that menu is open
-        if self.column_context_folder() == Some(&listing.path) {
-            container = container.style(context_outline);
-        }
-        container.into()
+        widget::container(self.dnd_dest(&Location::Path(listing.path.clone()), content))
+            .width(Length::Fixed(column_width))
+            .height(Length::Fill)
+            .into()
     }
 
     /// The last column for a single selected file, laid out as Finder's: the preview, the
@@ -5161,16 +5156,11 @@ impl Tab {
         } else {
             active
         };
-        let mut active = widget::container(active)
-            .width(Length::Fixed(active_width))
-            .height(Length::Fill);
-        // Outlined while the menu for its empty space is open
-        if self.column_context_folder().is_some()
-            && self.column_context_folder() == self.location.path_opt()
-        {
-            active = active.style(context_outline);
-        }
-        row = row.push(active);
+        row = row.push(
+            widget::container(active)
+                .width(Length::Fixed(active_width))
+                .height(Length::Fill),
+        );
 
         // Each divider resizes the column before it; as in Finder, the last column ends with
         // one too

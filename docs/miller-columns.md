@@ -118,8 +118,8 @@ sudo apt install --reinstall cosmic-files
 | Drag an unselected item | Drag just that item; the selection and columns stay as they are |
 | Right-click an unselected item in the active column | Outline it and open its menu, leaving the selection as it is (a selected item's menu acts on the selection) |
 | Right-click in another column | Outline the item and open its context menu, leaving the selection as it is |
-| Right-click empty space in the active column | Keep the selection and the next column; outline the column and open its folder's menu |
-| Right-click empty space in another column | Outline the column and open its folder's menu (new folder, paste, …), leaving the selection as it is; Select all there makes that column active with all of it selected |
+| Right-click empty space in the active column | Keep the selection and the next column; open the column's folder's menu |
+| Right-click empty space in another column | Open its folder's menu (new folder, paste, …), leaving the selection as it is; Select all there makes that column active with all of it selected |
 
 ## Status
 
