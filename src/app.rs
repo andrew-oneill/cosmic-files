@@ -2736,7 +2736,8 @@ impl Application for App {
             };
 
             if should_open {
-                let message = Message::TabMessage(None, tab::Message::Location(location.clone()));
+                let message =
+                    Message::TabMessage(None, tab::Message::LocationAsRoot(location.clone()));
                 return self.update(message);
             }
         }
@@ -3522,7 +3523,9 @@ impl Application for App {
                         } else {
                             Location::Path(path)
                         };
-                        let message = Message::TabMessage(None, tab::Message::Location(location));
+                        // As if chosen in the sidebar, where mounting starts
+                        let message =
+                            Message::TabMessage(None, tab::Message::LocationAsRoot(location));
                         return self.update(message);
                     }
                 }

@@ -46,6 +46,7 @@ This document provides a regression testing checklist for COSMIC Files. The chec
 - [ ] Selecting a folder shows its contents in a new column to the right; selecting a file or several items shows none.
 - [ ] Right arrow enters the selected folder and selects its first item; Left arrow returns and selects the folder left.
 - [ ] Left arrow in the leftmost column adds the parent folder as a new leftmost column.
+- [ ] Choosing a folder in the sidebar shows it as the leftmost column, even if it is inside the current folders.
 - [ ] Clicking an item in an earlier column makes that column active and removes the columns after it.
 - [ ] Double-clicking a file in another column opens it.
 - [ ] Right-clicking an item in another column outlines it without changing the selection; its menu actions (e.g. Rename) apply to it, and closing the menu removes the outline.

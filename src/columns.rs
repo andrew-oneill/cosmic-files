@@ -99,6 +99,12 @@ impl ColumnsState {
         *self = Self::default();
     }
 
+    /// Make the next location the leftmost column, as when chosen in the sidebar
+    pub fn reset_root(&mut self) {
+        self.root = None;
+        self.location = None;
+    }
+
     pub fn is_active(&self) -> bool {
         self.location.is_some()
     }

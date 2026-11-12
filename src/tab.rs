@@ -444,6 +444,8 @@ pub enum Message {
     ItemRight,
     ItemUp,
     Location(Location),
+    /// Go to a location chosen in the sidebar: in the columns view it becomes the leftmost column
+    LocationAsRoot(Location),
     LocationUp,
     Open(Option<PathBuf>),
     Reload,
@@ -2301,6 +2303,10 @@ impl Tab {
                         cd = Some(location);
                     }
                 }
+            }
+            Message::LocationAsRoot(location) => {
+                self.columns.reset_root();
+                commands.extend(self.update(Message::Location(location), modifiers));
             }
             Message::LocationUp => {
                 // Sets location to the path's parent
@@ -6564,6 +6570,27 @@ mod tests {
         tab.update(right_click, Modifiers::empty());
         tab.update(Message::ItemLeft, Modifiers::empty());
         assert!(tab.column_context().is_none(), "changing folder");
+
+        Ok(())
+    }
+
+    #[test]
+    fn columns_sidebar_location_becomes_leftmost_column() -> io::Result<()> {
+        let (fs, mut tab) = columns_fixture()?;
+        let dir = subdirs(fs.path())?[0].clone();
+
+        // Inside the current root, an ordinary location change keeps the root...
+        columns_go(&mut tab, &dir);
+        assert_eq!(tab.columns.ancestors.len(), 1, "sanity: root kept");
+
+        // ...but the sidebar makes the chosen folder the root, even the current folder
+        tab.update(
+            Message::LocationAsRoot(Location::Path(dir.clone())),
+            Modifiers::empty(),
+        );
+        assert_eq_tab_path(&tab, &dir);
+        assert_eq!(tab.columns.root.as_deref(), Some(dir.as_path()));
+        assert!(tab.columns.ancestors.is_empty());
 
         Ok(())
     }

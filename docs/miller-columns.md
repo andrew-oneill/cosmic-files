@@ -61,8 +61,10 @@ sudo apt install --reinstall cosmic-files
 - **Other columns live in `Tab::columns`** (`src/columns.rs`, `ColumnsState`):
   - `ancestors`: folders from `root` down to the parent of the active folder;
   - `preview`: contents of the single selected folder (none for files or multi-select).
-- **Root.** Kept while the active folder stays inside it. A jump elsewhere (sidebar, breadcrumb,
-  sibling) makes the new folder the root; moving left past the root makes its parent the root.
+- **Root.** A folder chosen in the sidebar (or a drive mounted from it) always becomes the root,
+  the leftmost column, as in Finder. Otherwise the root is kept while the active folder stays
+  inside it; a jump elsewhere (breadcrumb, sibling) makes the new folder the root, and moving left
+  past the root makes its parent the root.
 - **Reuse.** Moving left or right hands listings between the active column and the others, so
   the new active folder shows at once while its rescan runs.
 - **Right-click in another column.** `Tab::selected_items` is the one source of the items actions
