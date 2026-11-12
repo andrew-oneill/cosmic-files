@@ -17,6 +17,7 @@ pub mod app;
 mod archive;
 pub mod channel;
 pub mod clipboard;
+mod columns;
 pub mod config;
 mod context_action;
 pub mod dialog;

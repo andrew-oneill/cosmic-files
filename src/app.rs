@@ -186,6 +186,7 @@ pub enum Action {
     TabNew,
     TabNext,
     TabPrev,
+    TabViewColumns,
     TabViewGrid,
     TabViewList,
     ToggleFoldersFirst,
@@ -265,6 +266,7 @@ impl Action {
             Self::TabNew => Message::TabNew,
             Self::TabNext => Message::TabNext,
             Self::TabPrev => Message::TabPrev,
+            Self::TabViewColumns => Message::TabView(entity_opt, tab::View::Columns),
             Self::TabViewGrid => Message::TabView(entity_opt, tab::View::Grid),
             Self::TabViewList => Message::TabView(entity_opt, tab::View::List),
             Self::ToggleFoldersFirst => Message::ToggleFoldersFirst,
@@ -446,6 +448,8 @@ pub enum Message {
     TabConfig(TabConfig),
     TabMessage(Option<Entity>, tab::Message),
     TabNew,
+    /// Scanned items for a non-active column: tab, folder, items
+    TabColumnRescan(Entity, PathBuf, Vec<Item>),
     TabRescan(
         Entity,
         Location,
@@ -1527,6 +1531,23 @@ impl App {
         })
     }
 
+    /// Scan a folder shown as one of a tab's non-active columns.
+    fn rescan_column(&self, entity: Entity, path: PathBuf) -> Task<Message> {
+        let icon_sizes = self.config.tab.icon_sizes;
+        Task::future(async move {
+            let location = Location::Path(path.clone());
+            match tokio::task::spawn_blocking(move || location.scan(icon_sizes)).await {
+                Ok((_parent_item_opt, items)) => {
+                    cosmic::action::app(Message::TabColumnRescan(entity, path, items))
+                }
+                Err(err) => {
+                    log::warn!("failed to scan column {}: {err}", path.display());
+                    cosmic::action::none()
+                }
+            }
+        })
+    }
+
     fn rescan_trash(&mut self) -> Task<Message> {
         let needs_reload: Box<[_]> = self
             .tab_model
@@ -1858,10 +1879,8 @@ impl App {
             let new_paths: FxHashSet<_> = self
                 .tab_model
                 .iter()
-                .filter_map(|entity| {
-                    let tab = self.tab_model.data::<Tab>(entity)?;
-                    tab.location.path_opt().cloned()
-                })
+                .filter_map(|entity| self.tab_model.data::<Tab>(entity))
+                .flat_map(|tab| tab.watched_paths().cloned())
                 .collect();
 
             // Unwatch paths no longer used
@@ -3693,9 +3712,31 @@ impl Application for App {
                     }
                 }
 
-                let commands = needs_reload
+                // Non-active columns are rescanned whole on any change in their folder
+                let changed: Vec<PathBuf> = events
+                    .iter()
+                    .flat_map(|event| event.paths.iter().cloned())
+                    .collect();
+                let column_rescans: Vec<(Entity, PathBuf)> = self
+                    .tab_model
+                    .iter()
+                    .filter_map(|entity| Some((entity, self.tab_model.data::<Tab>(entity)?)))
+                    .flat_map(|(entity, tab)| {
+                        tab.columns_affected_by(&changed)
+                            .map(move |path| (entity, path))
+                            .collect::<Vec<_>>()
+                    })
+                    .collect();
+
+                let mut commands: Vec<_> = needs_reload
                     .into_iter()
-                    .map(|(entity, location)| self.update_tab(entity, location, None));
+                    .map(|(entity, location)| self.update_tab(entity, location, None))
+                    .collect();
+                commands.extend(
+                    column_rescans
+                        .into_iter()
+                        .map(|(entity, path)| self.rescan_column(entity, path)),
+                );
                 return Task::batch(commands);
             }
             Message::NotifyWatcher(mut watcher_wrapper) => match watcher_wrapper.watcher_opt.take()
@@ -4481,6 +4522,11 @@ impl Application for App {
                             config_set!(favorites, favorites);
                             commands.push(self.update_config());
                         }
+                        tab::Command::ScanColumn(path) => {
+                            // A new column's folder also needs watching
+                            commands.push(self.rescan_column(entity, path));
+                            commands.push(self.update_watcher());
+                        }
                         tab::Command::AutoScroll(scroll_speed) => {
                             // converting an f32 to an i16 here by multiplying by 10 and casting to i16
                             // further resolution isn't necessary
@@ -4681,7 +4727,7 @@ impl Application for App {
                         tab.sort_name = sort.0;
                         tab.sort_direction = sort.1;
 
-                        let mut tasks = Vec::with_capacity(2);
+                        let mut tasks = Vec::with_capacity(3);
 
                         if let Some(selection_paths) = selection_paths {
                             tab.select_paths(selection_paths);
@@ -4690,6 +4736,14 @@ impl Application for App {
                             tasks.push(Task::done(cosmic::action::app(Message::TabMessage(
                                 Some(entity),
                                 tab::Message::ScrollToFocused,
+                            ))));
+                        }
+
+                        // The new selection may need a preview column
+                        if tab.config.view == tab::View::Columns {
+                            tasks.push(Task::done(cosmic::action::app(Message::TabMessage(
+                                Some(entity),
+                                tab::Message::ColumnsSync,
                             ))));
                         }
 
@@ -4707,6 +4761,11 @@ impl Application for App {
                     }
                 }
             }
+            Message::TabColumnRescan(entity, path, items) => {
+                if let Some(tab) = self.tab_model.data_mut::<Tab>(entity) {
+                    tab.set_column_items(&path, items);
+                }
+            }
             Message::TabView(entity_opt, view) => {
                 let entity = entity_opt.unwrap_or_else(|| self.tab_model.active());
                 if let Some(tab) = self.tab_model.data_mut::<Tab>(entity) {
@@ -4718,7 +4777,10 @@ impl Application for App {
                 }
                 let mut config = self.config.tab;
                 config.view = view;
-                return self.update(Message::TabConfig(config));
+                return Task::batch([
+                    self.update(Message::TabConfig(config)),
+                    self.update(Message::TabMessage(Some(entity), tab::Message::ColumnsSync)),
+                ]);
             }
             Message::CutPaths(paths) => {
                 if let Some(tab) = self.tab_model.active_data_mut::<Tab>() {

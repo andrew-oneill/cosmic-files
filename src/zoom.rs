@@ -48,6 +48,6 @@ pub(crate) fn zoom_out_view(view: View, icon_sizes: &mut IconSizes) {
 const fn select_resized_icon(view: View, icon_sizes: &mut IconSizes) -> &mut NonZeroU16 {
     match view {
         View::Grid => &mut icon_sizes.grid,
-        View::List => &mut icon_sizes.list,
+        View::List | View::Columns => &mut icon_sizes.list,
     }
 }

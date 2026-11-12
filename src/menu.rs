@@ -434,6 +434,7 @@ pub fn dialog_menu(
                 widget::button::icon(widget::icon::from_name(match tab.config.view {
                     tab::View::Grid => "view-grid-symbolic",
                     tab::View::List => "view-list-symbolic",
+                    tab::View::Columns => "view-column-symbolic",
                 }))
                 // This prevents the button from being shown as insensitive
                 .on_press(Message::None)
@@ -453,6 +454,12 @@ pub fn dialog_menu(
                         None,
                         matches!(tab.config.view, tab::View::List),
                         Action::TabViewList,
+                    ),
+                    menu::Item::CheckBox(
+                        fl!("columns-view"),
+                        None,
+                        matches!(tab.config.view, tab::View::Columns),
+                        Action::TabViewColumns,
                     ),
                 ],
             ),
@@ -677,6 +684,13 @@ pub fn menu_bar<'a>(
                             None,
                             tab_opt.is_some_and(|tab| matches!(tab.config.view, tab::View::List)),
                             Action::TabViewList,
+                        ),
+                        menu::Item::CheckBox(
+                            fl!("columns-view"),
+                            None,
+                            tab_opt
+                                .is_some_and(|tab| matches!(tab.config.view, tab::View::Columns)),
+                            Action::TabViewColumns,
                         ),
                         menu::Item::Divider,
                         menu::Item::CheckBox(

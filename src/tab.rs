@@ -43,6 +43,7 @@ use walkdir::WalkDir;
 
 use crate::app::{Action, PreviewItem, PreviewKind};
 use crate::clipboard::{ClipboardCopy, ClipboardKind, ClipboardPaste};
+use crate::columns::{COLUMN_WIDTH, ColumnListing, ColumnTarget, ColumnsState};
 use crate::config::{
     ContextActionPreset, ICON_SCALE_MAX, ICON_SIZE_GRID, IconSizes, TabConfig, ThumbCfg,
 };
@@ -350,6 +351,8 @@ pub enum Command {
     OpenTrash,
     Preview(PreviewKind),
     RunContextAction(usize),
+    /// Scan a folder shown as a non-active column
+    ScanColumn(PathBuf),
     SetOpenWith(Mime, String),
     SetPermissions(PathBuf, u32),
     SetMultiplePermissions(Vec<(PathBuf, u32)>),
@@ -363,6 +366,11 @@ pub enum Message {
     AddNetworkDrive,
     AutoScroll(Option<f32>),
     Click(Option<usize>),
+    /// Click on an item in a non-active column
+    ColumnClick(ColumnTarget, usize),
+    ColumnDoubleClick(ColumnTarget, usize),
+    /// Bring the columns up to date after the tab changed outside of `update`
+    ColumnsSync,
     DoubleClick(Option<usize>),
     ClickRelease(Option<usize>),
     Config(TabConfig),
@@ -457,6 +465,8 @@ impl MenuAction for LocationMenuAction {
 pub enum View {
     Grid,
     List,
+    /// Miller columns: the folder's ancestors and the selected folder's contents side by side
+    Columns,
 }
 #[derive(Clone, Copy, Debug, Hash, PartialEq, PartialOrd, Ord, Eq, Deserialize, Serialize)]
 pub enum HeadingOptions {
@@ -563,6 +573,8 @@ pub struct Tab {
     time_formatter: DateTimeFormatter<fieldsets::T>,
     window_id: Option<window::Id>,
     large_image_manager: LargeImageManager,
+    pub(crate) columns: ColumnsState,
+    columns_scroll_id: widget::Id,
 }
 
 async fn calculate_dir_size(path: &Path, controller: Controller) -> Result<u64, OperationError> {
@@ -670,6 +682,8 @@ impl Tab {
             time_formatter: time_formatter(config.military_time),
             window_id,
             large_image_manager: LargeImageManager::new(),
+            columns: ColumnsState::default(),
+            columns_scroll_id: widget::Id::unique(),
         }
     }
 
@@ -1181,6 +1195,12 @@ impl Tab {
     }
 
     pub fn change_location(&mut self, location: &Location, history_i_opt: Option<usize>) {
+        if self.columns.is_active()
+            && let Some(old_path) = self.location.path_opt().cloned()
+        {
+            let items = self.items_opt.take();
+            self.columns.stash(ColumnListing::new(old_path, items));
+        }
         self.location = location.normalize();
         self.location_ancestors = self.location.ancestors();
         self.location_title = self.location.title();
@@ -1220,11 +1240,136 @@ impl Tab {
             self.history_i = self.history.len();
             self.history.push(location.clone());
         }
+        self.sync_columns_location();
+    }
+
+    /// Whether the list view's column headings show: in the list view, or when the columns
+    /// view falls back to it
+    fn shows_list_heading(&self) -> bool {
+        match self.config.view {
+            View::List => true,
+            View::Columns => !self.columns.is_active(),
+            View::Grid => false,
+        }
+    }
+
+    /// Whether the columns view applies: an ordinary folder shown in the app's columns view.
+    fn columns_enabled(&self) -> bool {
+        self.config.view == View::Columns
+            && matches!(self.mode, Mode::App)
+            && matches!(self.location, Location::Path(_))
+    }
+
+    /// Rebuild the non-active columns for the current folder, showing a held listing of the
+    /// folder itself at once rather than waiting for its scan.
+    fn sync_columns_location(&mut self) {
+        if !self.columns_enabled() {
+            if self.columns.root.is_some() {
+                self.columns.clear();
+            }
+            return;
+        }
+        let Some(path) = self.location.path_opt().cloned() else {
+            return;
+        };
+        self.columns.set_location(&path);
+        if self.items_opt.is_none()
+            && let Some(mut items) = self.columns.take_cached(&path).and_then(|l| l.items)
+        {
+            for item in &mut items {
+                item.state.selected = false;
+            }
+            self.items_opt = Some(items);
+        }
+    }
+
+    /// The selected item's path when exactly one folder is selected
+    fn single_selected_dir(&self) -> Option<PathBuf> {
+        let mut selected = self.items_opt.as_ref()?.iter().filter(|i| i.state.selected);
+        let item = selected.next()?;
+        if selected.next().is_some() || !item.metadata.is_dir() {
+            return None;
+        }
+        match item.location_opt.as_ref()? {
+            Location::Path(path) => Some(path.clone()),
+            _ => None,
+        }
+    }
+
+    /// Bring every column up to date with the current folder and selection, returning the scans
+    /// and scrolling this needs.
+    fn sync_columns(&mut self) -> Vec<Command> {
+        self.sync_columns_location();
+        if !self.columns.is_active() {
+            return Vec::new();
+        }
+        let preview = self.single_selected_dir();
+        self.columns.set_preview(preview.as_deref());
+        self.columns.clear_cache();
+
+        let mut commands: Vec<_> = self
+            .columns
+            .take_pending_scans()
+            .into_iter()
+            .map(Command::ScanColumn)
+            .collect();
+        if std::mem::take(&mut self.columns.scroll_to_end) {
+            commands.push(Command::Iced(
+                scrollable::snap_to(
+                    self.columns_scroll_id.clone(),
+                    scrollable::RelativeOffset {
+                        x: Some(1.0),
+                        y: None,
+                    },
+                )
+                .into(),
+            ));
+        }
+        commands
+    }
+
+    /// Store a scanned listing for the column showing `path`, if it is still shown.
+    pub fn set_column_items(&mut self, path: &Path, items: Vec<Item>) -> bool {
+        self.columns.set_items(path, items)
+    }
+
+    /// Folders this tab shows and should be watched for changes
+    pub fn watched_paths(&self) -> impl Iterator<Item = &PathBuf> {
+        self.location
+            .path_opt()
+            .into_iter()
+            .chain(self.columns.listings().map(|l| &l.path))
+    }
+
+    /// Non-active columns whose folder holds one of `changed` paths, so need rescanning
+    pub fn columns_affected_by<'a>(
+        &'a self,
+        changed: &'a [PathBuf],
+    ) -> impl Iterator<Item = PathBuf> + 'a {
+        self.columns
+            .listings()
+            .filter(move |l| {
+                changed
+                    .iter()
+                    .any(|p| p.parent() == Some(l.path.as_path()) || *p == l.path)
+            })
+            .map(|l| l.path.clone())
+    }
+
+    /// The first item a user would see in `items`, in the tab's sort order
+    fn first_visible_path(&self, items: &[Item]) -> Option<PathBuf> {
+        self.sort_items(items)
+            .into_iter()
+            .map(|(_, item)| item)
+            .find(|item| self.config.show_hidden || !item.hidden)
+            .and_then(|item| item.path_opt().cloned())
     }
 
     pub fn update(&mut self, message: Message, modifiers: Modifiers) -> Vec<Command> {
         let mut commands = Vec::new();
         let mut cd = None;
+        // Paths to select after `cd`, instead of the folder being left
+        let mut cd_select: Option<Vec<PathBuf>> = None;
         let mut history_i_opt = None;
         let mod_ctrl = modifiers.contains(Modifiers::CTRL) && self.mode.multiple();
         let mod_shift = modifiers.contains(Modifiers::SHIFT) && self.mode.multiple();
@@ -1279,6 +1424,34 @@ impl Tab {
             Message::DragEnd => {
                 self.clicked = None;
             }
+            Message::ColumnClick(target, i) => {
+                // Make the clicked column active, with the clicked item selected
+                if let Some(listing) = self.columns.target(target)
+                    && let Some(item_path) = listing
+                        .items
+                        .as_ref()
+                        .and_then(|items| items.get(i))
+                        .and_then(Item::path_opt)
+                {
+                    self.edit_location = None;
+                    cd = Some(Location::Path(listing.path.clone()));
+                    cd_select = Some(vec![item_path.clone()]);
+                }
+            }
+            Message::ColumnDoubleClick(target, i) => {
+                // The first click already selected it; folders are shown by that alone
+                if let Some(item) = self
+                    .columns
+                    .target(target)
+                    .and_then(|l| l.items.as_ref())
+                    .and_then(|items| items.get(i))
+                    && !item.metadata.is_dir()
+                    && let Some(path) = item.path_opt()
+                {
+                    commands.push(Command::OpenFile(vec![path.clone()]));
+                }
+            }
+            Message::ColumnsSync => {}
             Message::DoubleClick(click_i_opt) => {
                 if let Some(clicked_item) = self
                     .items_opt
@@ -1843,6 +2016,31 @@ impl Tab {
                     commands.push(Command::Iced(widget::button::focus(id).into()));
                 }
             }
+            Message::ItemLeft
+                if self.columns.is_active() && !self.gallery && self.edit_location.is_none() =>
+            {
+                // Up to the parent column, selecting the folder being left
+                self.dehighlight_all();
+                if let Location::Path(path) = &self.location
+                    && let Some(parent) = path.parent()
+                {
+                    cd = Some(Location::Path(parent.to_owned()));
+                }
+            }
+            Message::ItemRight
+                if self.columns.is_active() && !self.gallery && self.edit_location.is_none() =>
+            {
+                // Into the selected folder, selecting its first item
+                self.dehighlight_all();
+                if let Some(preview) = &self.columns.preview {
+                    cd = Some(Location::Path(preview.path.clone()));
+                    cd_select = preview
+                        .items
+                        .as_deref()
+                        .and_then(|items| self.first_visible_path(items))
+                        .map(|path| vec![path]);
+                }
+            }
             Message::ItemLeft => {
                 self.dehighlight_all();
                 if self.gallery {
@@ -2099,13 +2297,23 @@ impl Tab {
             }
             Message::Reload => {
                 //TODO: support keeping selected locations without paths
-                let selected_paths = self
+                let selected_paths: Vec<PathBuf> = self
                     .selected_locations()
                     .into_iter()
                     .filter_map(Location::into_path_opt)
                     .collect();
                 let location = self.location.clone();
                 self.change_location(&location, None);
+                // The columns view kept the listing; keep its selection and preview while
+                // everything is rescanned
+                if self.items_opt.is_some() {
+                    self.select_paths(selected_paths.clone());
+                }
+                commands.extend(
+                    self.columns
+                        .listings()
+                        .map(|listing| Command::ScanColumn(listing.path.clone())),
+                );
                 commands.push(Command::ChangeLocation(
                     self.title(),
                     location,
@@ -2615,7 +2823,7 @@ impl Tab {
                 }
             } else {
                 // Select parent if location is not directory
-                let mut selected_paths = None;
+                let mut selected_paths = cd_select;
                 if let Some(path) = location.path_opt()
                     && !path.is_dir()
                     && let Some(parent) = path.parent()
@@ -2630,6 +2838,12 @@ impl Tab {
                                 self.location.path_opt().map(|path| vec![path.clone()]);
                         }
                         self.change_location(&location, history_i_opt);
+                        // A held listing may already be shown; select in it straight away
+                        if let Some(paths) = &selected_paths
+                            && self.items_opt.is_some()
+                        {
+                            self.select_paths(paths.clone());
+                        }
                         commands.push(Command::ChangeLocation(
                             self.title(),
                             location,
@@ -2642,6 +2856,7 @@ impl Tab {
             }
         }
 
+        commands.extend(self.sync_columns());
         commands
     }
 
@@ -2657,10 +2872,15 @@ impl Tab {
     }
 
     fn column_sort(&self) -> Option<Vec<(usize, &Item)>> {
+        Some(self.sort_items(self.items_opt.as_ref()?))
+    }
+
+    /// `items` with their indices, in the tab's sort order
+    fn sort_items<'a>(&self, items: &'a [Item]) -> Vec<(usize, &'a Item)> {
         let check_reverse = |ord: Ordering, sort: bool| {
             if sort { ord } else { ord.reverse() }
         };
-        let mut items: Vec<_> = self.items_opt.as_ref()?.iter().enumerate().collect();
+        let mut items: Vec<_> = items.iter().enumerate().collect();
         let (sort_name, sort_direction, folders_first) = self.sort_options();
         match sort_name {
             HeadingOptions::Size => {
@@ -2761,7 +2981,7 @@ impl Tab {
                 });
             }
         }
-        Some(items)
+        items
     }
 
     fn dnd_dest<'a>(
@@ -3183,7 +3403,7 @@ impl Tab {
                 let mut column = widget::column::with_capacity(4).padding([0, space_s]);
                 column = column.push(row);
                 column = column.push(accent_rule);
-                if self.config.view == View::List && !condensed {
+                if self.shows_list_heading() && !condensed {
                     column = column.push(heading_row);
                     column = column.push(heading_rule);
                 }
@@ -3329,7 +3549,7 @@ impl Tab {
         column = column.push(row);
         column = column.push(accent_rule);
 
-        if self.config.view == View::List && !condensed {
+        if self.shows_list_heading() && !condensed {
             column = column.push(heading_row);
             column = column.push(heading_rule);
         }
@@ -3714,6 +3934,18 @@ impl Tab {
         Element<'_, Message>,
         bool,
     ) {
+        self.list_view_inner(None)
+    }
+
+    /// The list view, or with `column_width` the active column of the columns view
+    fn list_view_inner(
+        &self,
+        column_width: Option<f32>,
+    ) -> (
+        Option<Element<'static, Message>>,
+        Element<'_, Message>,
+        bool,
+    ) {
         let cosmic_theme::Spacing {
             space_s, space_xxs, ..
         } = theme::spacing();
@@ -3725,13 +3957,15 @@ impl Tab {
         } = self.config;
 
         let size = self.size_opt.get().unwrap_or_else(|| Size::new(0.0, 0.0));
+        let columns_mode = column_width.is_some();
+        let size = column_width.map_or(size, |width| Size::new(width, size.height));
         //TODO: allow resizing?
         let name_width = 300.0;
         let modified_width = 200.0;
         let size_width = 100.0;
-        let condensed = size.width < (name_width + modified_width + size_width);
+        let condensed = !columns_mode && size.width < (name_width + modified_width + size_width);
         let is_search = matches!(self.location, Location::Search(..));
-        let icon_size = if condensed || is_search {
+        let icon_size = if columns_mode || condensed || is_search {
             icon_sizes.list_condensed()
         } else {
             icon_sizes.list()
@@ -3865,7 +4099,9 @@ impl Tab {
                         }
                     };
 
-                    let row = if condensed {
+                    let row = if columns_mode {
+                        self.columns_row(item, icon_size, row_height)
+                    } else if condensed {
                         widget::row::with_children([
                             widget::icon::icon(item.icon_handle_list_condensed.clone())
                                 .content_fit(ContentFit::Contain)
@@ -3978,6 +4214,8 @@ impl Tab {
                             Element::from(
                                 space::vertical().height(Length::Fixed(f32::from(row_height))),
                             )
+                        } else if columns_mode {
+                            self.columns_row(item, icon_size, row_height).into()
                         } else if condensed {
                             widget::row::with_children([
                                 widget::icon::icon(item.icon_handle_list_condensed.clone())
@@ -4109,6 +4347,153 @@ impl Tab {
         (drag_col, mouse_area.into(), true)
     }
 
+    /// A row in the columns view: icon, name, and an arrow for folders
+    fn columns_row(
+        &self,
+        item: &Item,
+        icon_size: u16,
+        row_height: u16,
+    ) -> widget::Row<'static, Message, cosmic::Theme, cosmic::Renderer> {
+        let space_xxs = theme::spacing().space_xxs;
+        let mut row = widget::row::with_capacity(3)
+            .push(
+                widget::icon::icon(item.icon_handle_list_condensed.clone())
+                    .content_fit(ContentFit::Contain)
+                    .size(icon_size),
+            )
+            .push(
+                Item::list_display_name(item.display_name.clone())
+                    .ellipsize(text::Ellipsize::Middle(text::EllipsizeHeightLimit::Lines(
+                        1,
+                    )))
+                    .width(Length::Fill),
+            );
+        if item.metadata.is_dir() {
+            row = row.push(widget::icon::from_name("go-next-symbolic").size(16).icon());
+        }
+        row.height(Length::Fixed(f32::from(row_height)))
+            .align_y(Alignment::Center)
+            .spacing(space_xxs)
+    }
+
+    /// A non-active column: `selected` is the folder shown in the next column
+    fn column_listing_view<'a>(
+        &'a self,
+        listing: &'a ColumnListing,
+        target: ColumnTarget,
+        selected: Option<&Path>,
+    ) -> Element<'a, Message> {
+        let cosmic_theme::Spacing {
+            space_s, space_xxs, ..
+        } = theme::spacing();
+        let icon_size = self.config.icon_sizes.list_condensed();
+        let row_height = icon_size + 2 * space_xxs;
+
+        let mut column = widget::column::with_capacity(listing.items.as_ref().map_or(0, Vec::len));
+        //TODO: only build visible rows, as the list view does
+        for (i, item) in listing
+            .items
+            .as_deref()
+            .map(|items| self.sort_items(items))
+            .unwrap_or_default()
+        {
+            if item.hidden && !self.config.show_hidden {
+                continue;
+            }
+            let is_selected =
+                selected.is_some() && item.path_opt().map(PathBuf::as_path) == selected;
+            let button = mouse_area::MouseArea::new(
+                widget::button::custom(self.columns_row(item, icon_size, row_height))
+                    .width(Length::Fill)
+                    .padding([0, space_xxs])
+                    .class(button_style(
+                        is_selected,
+                        false,
+                        item.state.cut,
+                        true,
+                        true,
+                        false,
+                    )),
+            )
+            .on_press(move |_| Message::ColumnClick(target, i))
+            .on_double_click(move |_| Message::ColumnDoubleClick(target, i))
+            .on_right_press_no_capture()
+            .on_right_press(move |_| Message::ColumnClick(target, i));
+            let row = match &item.location_opt {
+                Some(location) if item.metadata.is_dir() => self.dnd_dest(location, button),
+                _ => button.into(),
+            };
+            column = column.push(row);
+        }
+
+        let content = widget::scrollable(column.padding([0, space_s]))
+            .id(listing.scrollable_id.clone())
+            .width(Length::Fill)
+            .height(Length::Fill);
+        widget::container(self.dnd_dest(&Location::Path(listing.path.clone()), content))
+            .width(Length::Fixed(COLUMN_WIDTH))
+            .height(Length::Fill)
+            .into()
+    }
+
+    /// Miller columns: ancestors, the active folder, and the selected folder's contents
+    pub fn columns_view(
+        &self,
+    ) -> (
+        Option<Element<'static, Message>>,
+        Element<'_, Message>,
+        bool,
+    ) {
+        if !self.columns.is_active() {
+            return self.list_view();
+        }
+
+        let mut row = widget::row::with_capacity(2 * self.columns.ancestors.len() + 3);
+        for (i, listing) in self.columns.ancestors.iter().enumerate() {
+            row = row
+                .push(self.column_listing_view(
+                    listing,
+                    ColumnTarget::Ancestor(i),
+                    self.columns.selected_child(i),
+                ))
+                .push(rule::vertical(1));
+        }
+
+        let (drag_list, active, can_scroll) = self.list_view_inner(Some(COLUMN_WIDTH));
+        let active: Element<_> = if can_scroll {
+            widget::id_container(
+                widget::scrollable(active)
+                    .id(self.scrollable_id.clone())
+                    .on_scroll(Message::Scroll)
+                    .width(Length::Fill)
+                    .height(Length::Fill),
+                widget::Id::new(format!("{}-scrollable", self.scrollable_id)),
+            )
+            .into()
+        } else {
+            active
+        };
+        row = row.push(
+            widget::container(active)
+                .width(Length::Fixed(COLUMN_WIDTH))
+                .height(Length::Fill),
+        );
+
+        if let Some(preview) = &self.columns.preview {
+            row = row.push(rule::vertical(1)).push(self.column_listing_view(
+                preview,
+                ColumnTarget::Preview,
+                None,
+            ));
+        }
+
+        let view = widget::scrollable::horizontal(row.height(Length::Fill))
+            .id(self.columns_scroll_id.clone())
+            .width(Length::Fill)
+            .height(Length::Fill);
+        (drag_list, view.into(), false)
+    }
+
     pub fn view_responsive<'a>(
         &'a self,
         key_binds: &'a HashMap<KeyBind, Action>,
@@ -4135,6 +4520,7 @@ impl Tab {
         let (drag_list, mut item_view, can_scroll) = match self.config.view {
             View::Grid => self.grid_view(),
             View::List => self.list_view(),
+            View::Columns => self.columns_view(),
         };
         item_view = widget::container(item_view).width(Length::Fill).into();
         let files = self
@@ -4175,7 +4561,7 @@ impl Tab {
                                     f32::from(space_xxs).mul_add(-3.0, -f32::from(space_xxxs)),
                                     -4. * f32::from(space_xxxs),
                                 ),
-                                View::List => Vector::ZERO,
+                                View::List | View::Columns => Vector::ZERO,
                             },
                         )
                     })
@@ -5190,7 +5576,7 @@ pub fn text_editor_class(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::{fs, io};
 
     use cosmic::iced::mouse::ScrollDelta;
@@ -5201,11 +5587,15 @@ mod tests {
     use tempfile::TempDir;
     use test_log::test;
 
-    use super::{ItemMetadata, ItemThumbnail, Location, Message, Tab, respond_to_scroll_direction};
+    use super::{
+        Command, ItemMetadata, ItemThumbnail, Location, Message, Tab, View,
+        respond_to_scroll_direction,
+    };
     use crate::app::test_utils::{
         NAME_LEN, NUM_DIRS, NUM_FILES, NUM_HIDDEN, NUM_NESTED, assert_eq_tab_path, empty_fs,
         eq_path_item, filter_dirs, read_dir_sorted, simple_fs, tab_click_new,
     };
+    use crate::columns::ColumnTarget;
     use crate::config::{IconSizes, TabConfig, ThumbCfg};
     use crate::scan::scan_path;
 
@@ -5704,5 +6094,453 @@ mod tests {
             ),
         }
         Ok(())
+    }
+
+    // Miller columns view
+
+    /// A columns view at `path`, as the app sets it up: items loaded and columns synced
+    fn columns_tab(path: &Path) -> Tab {
+        let location = Location::Path(path.to_owned());
+        let (parent_item_opt, items) = location.scan(IconSizes::default());
+        let mut tab = Tab::new(
+            location,
+            TabConfig::default(),
+            ThumbCfg::default(),
+            None,
+            widget::Id::unique(),
+            None,
+        );
+        tab.parent_item_opt = parent_item_opt;
+        tab.set_items(items);
+        tab.config.view = View::Columns;
+        tab.update(Message::ColumnsSync, Modifiers::empty());
+        tab
+    }
+
+    /// `simple_fs` tree with a loose file beside the folders, shown in the columns view
+    fn columns_fixture() -> io::Result<(TempDir, Tab)> {
+        let fs = simple_fs(NUM_FILES, NUM_HIDDEN, NUM_DIRS, NUM_NESTED, NAME_LEN)?;
+        fs::write(fs.path().join("loose.txt"), "loose")?;
+        let tab = columns_tab(fs.path());
+        Ok((fs, tab))
+    }
+
+    /// Folders directly inside `path`, in tab order
+    fn subdirs(path: &Path) -> io::Result<Vec<PathBuf>> {
+        Ok(read_dir_sorted(path)?
+            .into_iter()
+            .filter(|p| p.is_dir())
+            .collect())
+    }
+
+    fn is_hidden(path: &Path) -> bool {
+        path.file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with('.'))
+    }
+
+    /// Paths of the selected items in the active column
+    fn selected_paths(tab: &Tab) -> Vec<PathBuf> {
+        tab.items_opt()
+            .expect("active column should be loaded")
+            .iter()
+            .filter(|item| item.state.selected)
+            .filter_map(|item| item.path_opt().cloned())
+            .collect()
+    }
+
+    /// Select `paths` in the active column and sync the columns, returning the commands
+    fn columns_select(tab: &mut Tab, paths: Vec<PathBuf>) -> Vec<Command> {
+        tab.select_paths(paths);
+        tab.update(Message::ColumnsSync, Modifiers::empty())
+    }
+
+    /// Complete every scan requested by `commands`, as the app does
+    fn columns_run_scans(tab: &mut Tab, commands: &[Command]) {
+        for command in commands {
+            if let Command::ScanColumn(path) = command {
+                let items = Location::Path(path.clone()).scan(IconSizes::default()).1;
+                assert!(
+                    tab.set_column_items(path, items),
+                    "scan of {} should be shown",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    /// Go to `path` as the user would and load its listing, running any scans requested
+    fn columns_go(tab: &mut Tab, path: &Path) {
+        let commands = tab.update(
+            Message::Location(Location::Path(path.to_owned())),
+            Modifiers::empty(),
+        );
+        if tab.items_opt.is_none() {
+            columns_load_active(tab);
+        }
+        columns_run_scans(tab, &commands);
+    }
+
+    /// Load the active folder's listing, as the app does after a location change
+    fn columns_load_active(tab: &mut Tab) {
+        let (parent_item_opt, items) = tab.location.scan(IconSizes::default());
+        tab.parent_item_opt = parent_item_opt;
+        tab.set_items(items);
+    }
+
+    #[test]
+    fn columns_enter_at_root_has_no_ancestors_or_preview() -> io::Result<()> {
+        let (fs, tab) = columns_fixture()?;
+
+        assert_eq!(tab.columns.root.as_deref(), Some(fs.path()));
+        assert!(tab.columns.ancestors.is_empty());
+        assert!(tab.columns.preview.is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn columns_selecting_folder_previews_it() -> io::Result<()> {
+        let (fs, mut tab) = columns_fixture()?;
+        let dir = subdirs(fs.path())?[0].clone();
+
+        let commands = columns_select(&mut tab, vec![dir.clone()]);
+
+        assert!(
+            commands
+                .iter()
+                .any(|command| matches!(command, Command::ScanColumn(path) if *path == dir)),
+            "selecting a folder should request a scan of it"
+        );
+        let preview = tab
+            .columns
+            .preview
+            .as_ref()
+            .expect("selected folder should be previewed");
+        assert_eq!(preview.path, dir);
+        assert!(preview.items.is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn columns_selecting_file_or_several_folders_has_no_preview() -> io::Result<()> {
+        let (fs, mut tab) = columns_fixture()?;
+        let dirs = subdirs(fs.path())?;
+
+        columns_select(&mut tab, vec![fs.path().join("loose.txt")]);
+        assert!(tab.columns.preview.is_none(), "a file is not previewed");
+
+        columns_select(&mut tab, vec![dirs[0].clone(), dirs[1].clone()]);
+        assert!(
+            tab.columns.preview.is_none(),
+            "multiple selected folders are not previewed"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn columns_item_right_enters_previewed_folder() -> io::Result<()> {
+        let (fs, mut tab) = columns_fixture()?;
+        let dir = subdirs(fs.path())?[0].clone();
+        let commands = columns_select(&mut tab, vec![dir.clone()]);
+        columns_run_scans(&mut tab, &commands);
+
+        tab.update(Message::ItemRight, Modifiers::empty());
+
+        assert_eq_tab_path(&tab, &dir);
+        assert_eq!(tab.columns.ancestors.len(), 1);
+        assert_eq!(tab.columns.ancestors[0].path, fs.path());
+        assert!(
+            tab.columns.ancestors[0].items.is_some(),
+            "the folder left should keep its loaded listing"
+        );
+
+        // First item in tab order: folders first, then names, hidden files skipped
+        let first = read_dir_sorted(&dir)?
+            .into_iter()
+            .find(|path| !is_hidden(path))
+            .expect("folder should have visible items");
+        assert_eq!(selected_paths(&tab), vec![first]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn columns_item_left_returns_and_selects_folder_left() -> io::Result<()> {
+        let (fs, mut tab) = columns_fixture()?;
+        let dir = subdirs(fs.path())?[0].clone();
+        let commands = columns_select(&mut tab, vec![dir.clone()]);
+        columns_run_scans(&mut tab, &commands);
+        tab.update(Message::ItemRight, Modifiers::empty());
+
+        let commands = tab.update(Message::ItemLeft, Modifiers::empty());
+
+        assert_eq_tab_path(&tab, fs.path());
+        assert!(tab.columns.ancestors.is_empty());
+        assert_eq!(selected_paths(&tab), vec![dir.clone()]);
+
+        // The folder left is shown again as the preview, already loaded
+        let preview = tab
+            .columns
+            .preview
+            .as_ref()
+            .expect("folder left should be previewed");
+        assert_eq!(preview.path, dir);
+        assert!(preview.items.is_some());
+        assert!(
+            !commands
+                .iter()
+                .any(|command| matches!(command, Command::ScanColumn(path) if *path == dir)),
+            "the preview of the folder left should not be rescanned"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn columns_item_left_at_root_extends_root_upward() -> io::Result<()> {
+        // Own parent folder holding only the tree under test, so scanning it is cheap
+        let base = TempDir::new()?;
+        let root = base.path().join("root");
+        fs::create_dir(&root)?;
+        fs::create_dir(root.join("child"))?;
+        let mut tab = columns_tab(&root);
+
+        let commands = tab.update(Message::ItemLeft, Modifiers::empty());
+        let selected = commands.iter().find_map(|command| match command {
+            Command::ChangeLocation(_, _, selected) => selected.clone(),
+            _ => None,
+        });
+        assert_eq!(selected, Some(vec![root.clone()]));
+
+        assert_eq_tab_path(&tab, base.path());
+        assert_eq!(tab.columns.root.as_deref(), Some(base.path()));
+        assert!(tab.columns.ancestors.is_empty());
+
+        // The app loads the new folder and then selects the temp dir it came from
+        columns_load_active(&mut tab);
+        tab.select_paths(vec![root.clone()]);
+        tab.update(Message::ColumnsSync, Modifiers::empty());
+        assert_eq!(selected_paths(&tab), vec![root]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn columns_click_ancestor_makes_it_active() -> io::Result<()> {
+        let (fs, mut tab) = columns_fixture()?;
+        let dirs = subdirs(fs.path())?;
+        let (dir, other) = (dirs[0].clone(), dirs[1].clone());
+        columns_go(&mut tab, &dir);
+        let nested = subdirs(&dir)?[0].clone();
+        columns_go(&mut tab, &nested);
+        assert_eq!(tab.columns.ancestors.len(), 2, "sanity: two ancestors");
+
+        let i = tab.columns.ancestors[0]
+            .items
+            .as_ref()
+            .expect("root should be loaded")
+            .iter()
+            .position(|item| item.path_opt() == Some(&other))
+            .expect("other folder should be listed in root");
+        tab.update(
+            Message::ColumnClick(ColumnTarget::Ancestor(0), i),
+            Modifiers::empty(),
+        );
+
+        assert_eq_tab_path(&tab, fs.path());
+        assert!(tab.columns.ancestors.is_empty());
+        assert_eq!(selected_paths(&tab), vec![other.clone()]);
+        assert!(
+            !tab.columns.listings().any(|listing| listing.path == dir),
+            "columns deeper than the clicked one should be dropped"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn columns_click_preview_moves_into_it() -> io::Result<()> {
+        let (fs, mut tab) = columns_fixture()?;
+        let dir = subdirs(fs.path())?[0].clone();
+        let commands = columns_select(&mut tab, vec![dir.clone()]);
+        columns_run_scans(&mut tab, &commands);
+        let file = dir.join("0");
+        let i = tab
+            .columns
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.items.as_ref())
+            .expect("preview should be loaded")
+            .iter()
+            .position(|item| item.path_opt() == Some(&file))
+            .expect("file should be listed in preview");
+
+        tab.update(
+            Message::ColumnClick(ColumnTarget::Preview, i),
+            Modifiers::empty(),
+        );
+
+        assert_eq_tab_path(&tab, &dir);
+        assert_eq!(selected_paths(&tab), vec![file]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn columns_double_click_preview_file_opens_it() -> io::Result<()> {
+        let (fs, mut tab) = columns_fixture()?;
+        let dir = subdirs(fs.path())?[0].clone();
+        let commands = columns_select(&mut tab, vec![dir.clone()]);
+        columns_run_scans(&mut tab, &commands);
+        let file = dir.join("0");
+        let items = tab
+            .columns
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.items.as_ref())
+            .expect("preview should be loaded");
+        let file_i = items
+            .iter()
+            .position(|item| item.path_opt() == Some(&file))
+            .expect("file should be listed in preview");
+        let folder_i = items
+            .iter()
+            .position(|item| item.metadata.is_dir())
+            .expect("preview should contain a folder");
+
+        let commands = tab.update(
+            Message::ColumnDoubleClick(ColumnTarget::Preview, file_i),
+            Modifiers::empty(),
+        );
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                Command::OpenFile(paths) if *paths == vec![file.clone()]
+            )),
+            "double clicking a file should open it"
+        );
+
+        let commands = tab.update(
+            Message::ColumnDoubleClick(ColumnTarget::Preview, folder_i),
+            Modifiers::empty(),
+        );
+        assert!(
+            !commands
+                .iter()
+                .any(|command| matches!(command, Command::OpenFile(_))),
+            "double clicking a folder should not open a file"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn columns_stale_scan_is_ignored() -> io::Result<()> {
+        let (fs, mut tab) = columns_fixture()?;
+        let dirs = subdirs(fs.path())?;
+        columns_select(&mut tab, vec![dirs[0].clone()]);
+
+        // The second folder is not shown, so its scan result is stale
+        let items = Location::Path(dirs[1].clone()).scan(IconSizes::default()).1;
+        assert!(!tab.set_column_items(&dirs[1], items));
+
+        let preview = tab.columns.preview.as_ref().expect("preview still shown");
+        assert_eq!(preview.path, dirs[0]);
+        assert!(
+            preview.items.is_none(),
+            "stale scan should not fill preview"
+        );
+        // At the root there are no ancestors, so the preview is the only other column
+        assert_eq!(tab.columns.listings().count(), 1);
+
+        Ok(())
+    }
+
+    /// Set up a tab in folder `dir` of `fs` with its nested folder `nested` previewed
+    fn columns_previewing_nested(fs: &TempDir) -> io::Result<(Tab, PathBuf, PathBuf)> {
+        let mut tab = columns_tab(fs.path());
+        let dir = subdirs(fs.path())?[0].clone();
+        columns_go(&mut tab, &dir);
+        let nested = subdirs(&dir)?[0].clone();
+        let commands = columns_select(&mut tab, vec![nested.clone()]);
+        columns_run_scans(&mut tab, &commands);
+        Ok((tab, dir, nested))
+    }
+
+    #[test]
+    fn columns_watched_paths_include_all_columns() -> io::Result<()> {
+        let (fs, _) = columns_fixture()?;
+        let (tab, dir, nested) = columns_previewing_nested(&fs)?;
+
+        let watched: Vec<PathBuf> = tab.watched_paths().cloned().collect();
+
+        assert_eq!(
+            watched.len(),
+            3,
+            "active, ancestor and preview: {watched:?}"
+        );
+        assert!(watched.contains(&dir));
+        assert!(watched.contains(&fs.path().to_path_buf()));
+        assert!(watched.contains(&nested));
+
+        Ok(())
+    }
+
+    #[test]
+    fn columns_affected_by_changes_in_shown_columns_only() -> io::Result<()> {
+        let (fs, _) = columns_fixture()?;
+        let (tab, dir, nested) = columns_previewing_nested(&fs)?;
+        let root = fs.path().to_path_buf();
+
+        let affected: Vec<PathBuf> = tab
+            .columns_affected_by(&[nested.join("new"), root.join("new")])
+            .collect();
+        assert_eq!(affected.len(), 2, "affected: {affected:?}");
+        assert!(affected.contains(&nested));
+        assert!(affected.contains(&root));
+
+        // The active folder is not a non-active column, and unshown folders are not affected
+        let unaffected: Vec<PathBuf> = tab
+            .columns_affected_by(&[dir.join("new"), root.join("other").join("new")])
+            .collect();
+        assert!(unaffected.is_empty(), "unaffected: {unaffected:?}");
+
+        Ok(())
+    }
+
+    #[test]
+    fn columns_switching_to_list_view_clears_columns() -> io::Result<()> {
+        let (fs, mut tab) = columns_fixture()?;
+        columns_select(&mut tab, vec![subdirs(fs.path())?[0].clone()]);
+        assert!(tab.columns.root.is_some());
+
+        tab.config.view = View::List;
+        tab.update(Message::ColumnsSync, Modifiers::empty());
+
+        assert!(tab.columns.root.is_none());
+        assert!(tab.columns.ancestors.is_empty());
+        assert!(tab.columns.preview.is_none());
+        assert!(!tab.columns.is_active());
+
+        Ok(())
+    }
+
+    #[test]
+    fn columns_inactive_for_non_path_location() {
+        let mut tab = Tab::new(
+            Location::Recents,
+            TabConfig::default(),
+            ThumbCfg::default(),
+            None,
+            widget::Id::unique(),
+            None,
+        );
+        tab.config.view = View::Columns;
+        tab.update(Message::ColumnsSync, Modifiers::empty());
+
+        assert!(!tab.columns.is_active());
+        assert!(tab.columns.root.is_none());
     }
 }
