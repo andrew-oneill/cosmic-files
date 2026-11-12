@@ -18,7 +18,14 @@ cargo build --release
 ```
 
 Running from `target/` leaves any installed cosmic-files untouched. Switch to the columns view
-with Ctrl+3 or View → Columns view. To update, `git pull` and build again.
+with Ctrl+3 or View → Columns view.
+
+To update:
+
+```sh
+git pull
+cargo build --release
+```
 
 If Homebrew's `pkg-config` comes first on `PATH`, it cannot find the system libraries and the
 build fails. Point the build at the system one:
